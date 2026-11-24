@@ -1,0 +1,9 @@
+{
+  "name": "PT Sinar Bunga Mas — Aplikasi Absensi & HRIS",
+  "description": "Aplikasi Absensi GPS Kamera Live ber-watermark, QR Pos/Area, dan Sistem HRIS Terpadu PT Sinar Bunga Mas (One Stop Business Services).",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}

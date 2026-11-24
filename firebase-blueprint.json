@@ -1,0 +1,737 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Authorized HRD administrator role grant mapped by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the HRD administrator"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 120,
+          "description": "Verified email address of the administrator"
+        },
+        "grantedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "UID of the administrator who granted this role"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted"
+        }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "Employee": {
+      "title": "Employee",
+      "description": "Employee HRIS master profile containing employment terms and private contact PII.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID or HRD-assigned employee record identifier"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$",
+          "description": "Company employee identification number (NIK)"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100,
+          "description": "Full employee name"
+        },
+        "position": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "description": "Job title or position"
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32,
+          "description": "Company division"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["hrd", "employee"],
+          "maxLength": 16,
+          "description": "Access role (immutable by non-admins)"
+        },
+        "shiftCode": {
+          "type": "string",
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "maxLength": 16,
+          "description": "Assigned work shift template"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 120,
+          "description": "Employee email address (PII)"
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Employee mobile/WhatsApp number (PII)"
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Residential address (PII)"
+        },
+        "joinDate": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Employment start date YYYY-MM-DD"
+        },
+        "contractType": {
+          "type": "string",
+          "enum": ["PKWT", "PKO", "PKWTT"],
+          "maxLength": 10,
+          "description": "Employment contract category"
+        },
+        "contractEnd": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Contract expiration date YYYY-MM-DD"
+        },
+        "contractSigned": {
+          "type": "boolean",
+          "description": "Whether the digital contract has been e-signed"
+        },
+        "contractSignedAt": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "WIB timestamp string when contract was signed"
+        },
+        "baseSalary": {
+          "type": "number",
+          "description": "Monthly base salary in IDR"
+        },
+        "positionAllowance": {
+          "type": "number",
+          "description": "Monthly position allowance in IDR"
+        },
+        "mealTransportAllowance": {
+          "type": "number",
+          "description": "Monthly meal and transport allowance in IDR"
+        },
+        "leaveQuota": {
+          "type": "number",
+          "description": "Remaining annual leave days"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether employee account is active"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "name",
+        "position",
+        "division",
+        "role",
+        "shiftCode",
+        "email",
+        "phone",
+        "address",
+        "joinDate",
+        "contractType",
+        "contractEnd",
+        "contractSigned",
+        "contractSignedAt",
+        "baseSalary",
+        "positionAllowance",
+        "mealTransportAllowance",
+        "leaveQuota",
+        "active",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily clock-in and clock-out attendance log verified with GPS and live watermarked camera.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "shiftCode": {
+          "type": "string",
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "maxLength": 16
+        },
+        "clockInTime": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "clockInPhotoVerified": {
+          "type": "boolean"
+        },
+        "clockInLat": {
+          "type": "number"
+        },
+        "clockInLng": {
+          "type": "number"
+        },
+        "clockInAddress": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "clockInDistanceMeters": {
+          "type": "number"
+        },
+        "lateMinutes": {
+          "type": "number"
+        },
+        "clockOutTime": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "clockOutPhotoVerified": {
+          "type": "boolean"
+        },
+        "clockOutLat": {
+          "type": "number"
+        },
+        "clockOutLng": {
+          "type": "number"
+        },
+        "clockOutAddress": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "workMinutes": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Tepat Waktu", "Terlambat", "Selesai", "Belum Pulang"],
+          "maxLength": 24
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "employeeName",
+        "division",
+        "date",
+        "shiftCode",
+        "clockInTime",
+        "clockInPhotoVerified",
+        "clockInLat",
+        "clockInLng",
+        "clockInAddress",
+        "clockInDistanceMeters",
+        "lateMinutes",
+        "clockOutTime",
+        "clockOutPhotoVerified",
+        "clockOutLat",
+        "clockOutLng",
+        "clockOutAddress",
+        "workMinutes",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LeaveRequest": {
+      "title": "LeaveRequest",
+      "description": "Employee leave or sick permission submission reviewed by HRD.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32
+        },
+        "type": {
+          "type": "string",
+          "enum": ["Cuti Tahunan", "Izin Sakit", "Izin Khusus", "Izin Pribadi"],
+          "maxLength": 32
+        },
+        "startDate": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "endDate": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "days": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Menunggu", "Disetujui", "Ditolak"],
+          "maxLength": 16
+        },
+        "createdLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "employeeName",
+        "division",
+        "type",
+        "startDate",
+        "endDate",
+        "days",
+        "reason",
+        "status",
+        "createdLabel",
+        "reviewedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OvertimeRequest": {
+      "title": "OvertimeRequest",
+      "description": "Employee overtime (SPL) submission with estimated pay.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "startTime": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "endTime": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "hours": {
+          "type": "number"
+        },
+        "estimatedPay": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Menunggu", "Disetujui", "Ditolak"],
+          "maxLength": 16
+        },
+        "createdLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "employeeName",
+        "division",
+        "date",
+        "startTime",
+        "endTime",
+        "hours",
+        "estimatedPay",
+        "reason",
+        "status",
+        "createdLabel",
+        "reviewedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ShiftSwapRequest": {
+      "title": "ShiftSwapRequest",
+      "description": "Employee shift swap request reviewed by HRD.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "fromShift": {
+          "type": "string",
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "maxLength": 16
+        },
+        "toShift": {
+          "type": "string",
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "maxLength": 16
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Menunggu", "Disetujui", "Ditolak"],
+          "maxLength": 16
+        },
+        "createdLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "employeeName",
+        "division",
+        "date",
+        "fromShift",
+        "toShift",
+        "reason",
+        "status",
+        "createdLabel",
+        "reviewedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ExitClearanceRequest": {
+      "title": "ExitClearanceRequest",
+      "description": "Employee offboarding exit clearance request and departmental checklist.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "employeeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "position": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "division": {
+          "type": "string",
+          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "maxLength": 32
+        },
+        "lastWorkingDate": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 500
+        },
+        "checklist": {
+          "type": "array",
+          "description": "Bounded list (1-10 items) of departmental clearance items"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Menunggu", "Disetujui", "Ditolak"],
+          "maxLength": 16
+        },
+        "createdLabel": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "employeeName",
+        "position",
+        "division",
+        "lastWorkingDate",
+        "reason",
+        "checklist",
+        "status",
+        "createdLabel",
+        "reviewedBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ScheduleEntry": {
+      "title": "ScheduleEntry",
+      "description": "Assigned work schedule and task completion status per employee.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "nik": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 24,
+          "pattern": "^[A-Z0-9\\-]+$"
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "shiftCode": {
+          "type": "string",
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "maxLength": 16
+        },
+        "location": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "patrolCompleted": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "nik",
+        "date",
+        "shiftCode",
+        "location",
+        "notes",
+        "patrolCompleted",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted HRD administrator role registry keyed by Firebase Auth UID."
+    },
+    "/employees/{employeeId}": {
+      "schema": { "$ref": "#/entities/Employee" },
+      "description": "Master employee profiles and contact PII, accessible only to owner or HRD admin."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Daily GPS and live-camera verified attendance records per employee."
+    },
+    "/leaves/{leaveId}": {
+      "schema": { "$ref": "#/entities/LeaveRequest" },
+      "description": "Leave and sick permission submissions."
+    },
+    "/overtimes/{overtimeId}": {
+      "schema": { "$ref": "#/entities/OvertimeRequest" },
+      "description": "Overtime (SPL) requests."
+    },
+    "/shiftSwaps/{swapId}": {
+      "schema": { "$ref": "#/entities/ShiftSwapRequest" },
+      "description": "Shift swap requests."
+    },
+    "/exitClearances/{exitId}": {
+      "schema": { "$ref": "#/entities/ExitClearanceRequest" },
+      "description": "Offboarding exit clearance workflows."
+    },
+    "/schedules/{scheduleId}": {
+      "schema": { "$ref": "#/entities/ScheduleEntry" },
+      "description": "Daily work shift schedules per employee."
+    }
+  }
+}
