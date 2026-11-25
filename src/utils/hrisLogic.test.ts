@@ -1,21 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildAttendanceCsv,
+  DEFAULT_DIVISION_SHIFT_RULES,
+  DEFAULT_PAYROLL_SETTINGS,
+  FALLBACK_DIVISION_SHIFT_CODES,
+  SHIFT_TEMPLATES,
   calculateDistanceMeters,
   calculateInclusiveDays,
   calculateLateMinutes,
   calculateOvertimeEstimate,
+  calculateOvertimePayForRequest,
   calculatePayslip,
   calculateWorkMinutes,
+  effectiveShiftForDate,
+  findScheduleConflict,
+  formatReportTypesLabel,
   formatRupiah,
   generateEmployeeNik,
   getDivisionCompensationDefaults,
   getWibComponents,
   isValidEmailAddress,
+  requiredReportFormats,
+  resolveDivisionShiftRule,
+  resolveShiftTolerance,
+  shiftsConflictOnDates,
+  resolvePayslipComponentAmount,
   sanitizeString,
+  validateClockIn,
+  validateClockOut,
+  validateShiftSwap,
 } from './hrisLogic';
-import type { AttendanceRecord, Employee, OvertimeRequest } from '../types/hris';
+import type { ShiftSwapValidationInput } from './hrisLogic';
+import type {
+  AttendanceRecord,
+  Division,
+  Employee,
+  OvertimeRequest,
+  ShiftCode,
+  ShiftSwapRequest,
+} from '../types/hris';
 
 const sampleEmployee: Employee = {
   uid: 'uid_admin_01',
@@ -72,6 +95,45 @@ test('calculateLateMinutes respects 10-minute tolerance on shift start', () => {
   assert.equal(calculateLateMinutes('08:10:00', 'REGULER'), 0);
   assert.equal(calculateLateMinutes('08:25:00', 'REGULER'), 25);
   assert.equal(calculateLateMinutes('07:15:00', 'PAGI'), 15);
+});
+
+test('resolveShiftTolerance uses defaults and per-division overrides', () => {
+  assert.deepEqual(resolveShiftTolerance('REGULER'), {
+    earlyInMinutes: 60,
+    lateInMinutes: 10,
+    earlyOutMinutes: 15,
+  });
+  const override = {
+    division: 'Operasional',
+    allowedShiftCodes: ['REGULER'] as ShiftCode[],
+    defaultShiftCode: 'REGULER' as ShiftCode,
+    shiftTolerances: { REGULER: { earlyInMinutes: 120, lateInMinutes: 30, earlyOutMinutes: 5 } },
+  };
+  assert.deepEqual(resolveShiftTolerance('REGULER', override), {
+    earlyInMinutes: 120,
+    lateInMinutes: 30,
+    earlyOutMinutes: 5,
+  });
+});
+
+test('validateClockIn blocks only before the early window', () => {
+  // Jam masuk 08:00, toleransi masuk awal 60 menit → dibuka 07:00.
+  assert.equal(validateClockIn('07:00:00', 'REGULER').ok, true);
+  assert.equal(validateClockIn('06:59:00', 'REGULER').ok, false);
+  // Terlambat tidak diblokir, hanya tercatat.
+  assert.equal(validateClockIn('09:30:00', 'REGULER').ok, true);
+  // Shift malam 23:00 dengan clock-in lewat tengah malam tetap diterima.
+  assert.equal(validateClockIn('00:30:00', 'MALAM').ok, true);
+});
+
+test('validateClockOut blocks only before the early window, late is unlimited', () => {
+  // Jam pulang 17:00, toleransi pulang awal 15 menit → dibuka 16:45.
+  assert.equal(validateClockOut('16:45:00', 'REGULER').ok, true);
+  assert.equal(validateClockOut('16:44:00', 'REGULER').ok, false);
+  assert.equal(validateClockOut('23:00:00', 'REGULER').ok, true);
+  // Shift malam 23:00-07:00: pulang 06:50 masih dalam toleransi 15 menit.
+  assert.equal(validateClockOut('06:50:00', 'MALAM').ok, true);
+  assert.equal(validateClockOut('06:40:00', 'MALAM').ok, false);
 });
 
 test('calculateWorkMinutes supports standard and overnight shifts', () => {
@@ -158,40 +220,242 @@ test('calculatePayslip sums allowances, approved overtime, and deductions by UID
   assert.equal(formatRupiah(1500000), 'Rp 1.500.000');
 });
 
-test('buildAttendanceCsv and getWibComponents produce GPS-only formats without QR columns', () => {
+test('resolveDivisionShiftRule enforces 24-hour Security and short Cleaning Service windows', () => {
+  const security = resolveDivisionShiftRule('Security');
+  assert.deepEqual(security.allowedShiftCodes, ['SECURITY24', 'PAGI', 'SIANG', 'MALAM']);
+  assert.equal(security.defaultShiftCode, 'SECURITY24');
+
+  const cleaning = resolveDivisionShiftRule('Cleaning Service');
+  assert.deepEqual(cleaning.allowedShiftCodes, ['PAGI']);
+  assert.equal(SHIFT_TEMPLATES.PAGI.endTime < '18:00', true);
+
+  // Divisi buatan HRD tanpa aturan khusus memakai fallback, bukan aturan Security.
+  const custom = resolveDivisionShiftRule('Gudang');
+  assert.deepEqual(custom.allowedShiftCodes, FALLBACK_DIVISION_SHIFT_CODES);
+});
+
+test('validateShiftSwap rejects overlaps, disallowed shifts, leave, and duplicates', () => {
+  const base: ShiftSwapValidationInput = {
+    uid: 'uid_sec_01',
+    division: 'Security' as Division,
+    date: '2026-11-25',
+    fromShift: 'PAGI' as ShiftCode,
+    toShift: 'SIANG' as ShiftCode,
+    schedules: [],
+    rules: DEFAULT_DIVISION_SHIFT_RULES,
+    shiftSwaps: [] as ShiftSwapRequest[],
+  };
+
+  assert.deepEqual(validateShiftSwap(base), { ok: true });
+
+  const overlapping = validateShiftSwap({
+    ...base,
+    schedules: [
+      {
+        id: 'sch-1',
+        uid: base.uid,
+        nik: 'SEC-0001',
+        date: base.date,
+        shiftCode: 'SECURITY24',
+        location: 'Pos Utama',
+        notes: '',
+        patrolCompleted: false,
+      },
+    ],
+  });
+  assert.equal(overlapping.ok, false);
+
+  const disallowed = validateShiftSwap({ ...base, division: 'Cleaning Service' });
+  assert.equal(disallowed.ok, false);
+
+  const onLeave = validateShiftSwap({ ...base, onApprovedLeave: true });
+  assert.equal(onLeave.ok, false);
+
+  const duplicated = validateShiftSwap({
+    ...base,
+    shiftSwaps: [
+      {
+        id: 'swap-1',
+        uid: base.uid,
+        nik: 'SEC-0001',
+        employeeName: 'Petugas',
+        division: base.division,
+        date: base.date,
+        fromShift: base.fromShift,
+        toShift: base.toShift,
+        reason: 'Keperluan keluarga',
+        status: 'Menunggu',
+        createdLabel: '2026-11-24 09:00 WIB',
+        reviewedBy: '',
+      },
+    ],
+  });
+  assert.equal(duplicated.ok, false);
+});
+
+test('requiredReportFormats supports multi-format tasks and legacy single format', () => {
+  assert.deepEqual(requiredReportFormats({ reportTypeRequired: 'gambar' }), ['gambar']);
+  assert.deepEqual(requiredReportFormats({ reportTypeRequired: 'semua' }), [
+    'pesan',
+    'gambar',
+    'dokumen',
+  ]);
+  assert.deepEqual(
+    requiredReportFormats({ reportTypeRequired: 'gambar', reportTypes: ['dokumen', 'gambar'] }),
+    ['gambar', 'dokumen']
+  );
+  assert.deepEqual(requiredReportFormats({ reportTypeRequired: 'pesan', reportTypes: ['semua'] }), [
+    'pesan',
+    'gambar',
+    'dokumen',
+  ]);
+  assert.equal(formatReportTypesLabel(['gambar', 'dokumen']), 'Gambar + Dokumen');
+});
+
+test('overtime pay modes and payroll component basis compute per employee', () => {
+  const perJam = calculateOvertimePayForRequest({ hours: 2 }, 3460000, {
+    ...DEFAULT_PAYROLL_SETTINGS,
+    overtimeRateMode: 'perJam',
+    overtimeHourlyMultiplier: 1.5,
+  });
+  assert.equal(perJam, Math.round(2 * (3460000 / 173) * 1.5));
+
+  const perSesi = calculateOvertimePayForRequest({ hours: 5 }, 3460000, {
+    ...DEFAULT_PAYROLL_SETTINGS,
+    overtimeRateMode: 'perSesi',
+    overtimeSessionRate: 75000,
+  });
+  assert.equal(perSesi, 75000);
+
+  const bpjs = resolvePayslipComponentAmount(
+    {
+      id: 'pc-1',
+      name: 'BPJS Kesehatan',
+      kind: 'deduction',
+      basis: 'persenGajiPokok',
+      amount: 1,
+      scope: 'employee',
+      employeeUid: sampleEmployee.uid,
+      active: true,
+      createdAt: '2026-01-01 08:00 WIB',
+    },
+    sampleEmployee
+  );
+  assert.equal(bpjs, 85000);
+});
+
+test('getWibComponents produces stable WIB date and time labels', () => {
   const wib = getWibComponents(new Date('2026-11-24T01:54:23.000Z'));
   assert.equal(wib.timeFull, '08:54:23');
   assert.equal(wib.isoDate, '2026-11-24');
   assert.equal(wib.fullIndonesianDate, 'Selasa, 24 November 2026');
-
-  const csv = buildAttendanceCsv([
-    {
-      id: 'att-1',
-      uid: 'uid_sec_01',
-      nik: 'SEC-0001',
-      employeeName: 'Budi Santoso',
-      division: 'Security',
-      date: '2026-11-24',
-      shiftCode: 'PAGI',
-      clockInTime: '06:58:00',
-      clockInPhotoVerified: true,
-      clockInLat: -6.208763,
-      clockInLng: 106.845599,
-      clockInAddress: 'Kantor Pusat PT Sinar Bunga Mas',
-      clockInDistanceMeters: 15,
-      clockOutTime: '',
-      clockOutPhotoVerified: false,
-      clockOutLat: 0,
-      clockOutLng: 0,
-      clockOutAddress: '',
-      lateMinutes: 0,
-      workMinutes: 0,
-      status: 'Tepat Waktu',
-    },
-  ]);
-  assert.ok(csv.includes('SEC-0001'));
-  assert.ok(csv.includes('Terverifikasi'));
-  assert.ok(csv.includes('-6.20876'));
-  assert.equal(csv.toLowerCase().includes('qr'), false, 'CSV must not contain QR columns');
 });
 
+
+test('shift conflicts are detected across midnight (night/24-hour shifts)', () => {
+  // MALAM (23:00-07:00) hari ini vs PAGI (07:00-15:00) besok: bersambung, bukan bentrok.
+  assert.equal(
+    shiftsConflictOnDates(
+      { shiftCode: 'MALAM', date: '2026-11-24' },
+      { shiftCode: 'PAGI', date: '2026-11-25' },
+      '2026-11-24'
+    ),
+    false
+  );
+  // SECURITY24 (07:00-07:00) menutup seluruh hari, jadi PAGI pada tanggal yang sama bentrok.
+  assert.equal(
+    shiftsConflictOnDates(
+      { shiftCode: 'SECURITY24', date: '2026-11-24' },
+      { shiftCode: 'PAGI', date: '2026-11-24' },
+      '2026-11-24'
+    ),
+    true
+  );
+  // SECURITY24 kemarin sudah selesai 07:00 hari ini: SIANG hari ini aman.
+  assert.equal(
+    shiftsConflictOnDates(
+      { shiftCode: 'SECURITY24', date: '2026-11-23' },
+      { shiftCode: 'SIANG', date: '2026-11-24' },
+      '2026-11-24'
+    ),
+    false
+  );
+  // SIANG (15:00-23:00) hari ini bertabrakan dengan MALAM (23:00) hari yang sama? tidak.
+  assert.equal(
+    shiftsConflictOnDates(
+      { shiftCode: 'SIANG', date: '2026-11-24' },
+      { shiftCode: 'MALAM', date: '2026-11-24' },
+      '2026-11-24'
+    ),
+    false
+  );
+});
+
+test('findScheduleConflict ignores the row being replaced and unrelated employees', () => {
+  const schedules = [
+    {
+      id: 'sch_a_20261124',
+      uid: 'uid_a',
+      nik: 'SEC-0001',
+      date: '2026-11-24',
+      shiftCode: 'SECURITY24' as ShiftCode,
+      location: 'Pos Utama',
+      notes: '',
+      patrolCompleted: false,
+    },
+    {
+      id: 'sch_b_20261124',
+      uid: 'uid_b',
+      nik: 'SEC-0002',
+      date: '2026-11-24',
+      shiftCode: 'PAGI' as ShiftCode,
+      location: 'Pos Utama',
+      notes: '',
+      patrolCompleted: false,
+    },
+  ];
+
+  // Mengganti baris itu sendiri tidak dianggap bentrok.
+  assert.equal(
+    findScheduleConflict({
+      uid: 'uid_a',
+      date: '2026-11-24',
+      shiftCode: 'MALAM',
+      schedules,
+      ignoreId: 'sch_a_20261124',
+    }),
+    null
+  );
+
+  // Karyawan lain tidak memengaruhi pemeriksaan.
+  assert.equal(
+    findScheduleConflict({ uid: 'uid_c', date: '2026-11-24', shiftCode: 'PAGI', schedules }),
+    null
+  );
+
+  // Tanpa ignoreId, shift 24 jam milik karyawan yang sama pada tanggal sama tetap bentrok.
+  const conflict = findScheduleConflict({
+    uid: 'uid_a',
+    date: '2026-11-24',
+    shiftCode: 'PAGI',
+    schedules,
+  });
+  assert.equal(conflict?.id, 'sch_a_20261124');
+});
+
+test('effectiveShiftForDate prefers the schedule entry over the profile shift', () => {
+  const schedules = [
+    {
+      id: 'sch_a_20261125',
+      uid: 'uid_a',
+      nik: 'SEC-0001',
+      date: '2026-11-25',
+      shiftCode: 'SIANG' as ShiftCode,
+      location: 'Pos Utama',
+      notes: '',
+      patrolCompleted: false,
+    },
+  ];
+  assert.equal(effectiveShiftForDate('uid_a', '2026-11-25', schedules, 'PAGI'), 'SIANG');
+  assert.equal(effectiveShiftForDate('uid_a', '2026-11-26', schedules, 'PAGI'), 'PAGI');
+});

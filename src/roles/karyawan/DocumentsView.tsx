@@ -8,14 +8,13 @@ import {
   Save,
   User,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
-import type { DocumentSubTab } from '../types/hris';
+import { useHris } from '../../context/HrisContext';
+import type { DocumentSubTab } from '../../types/hris';
 import {
-  SHIFT_TEMPLATES,
   calculatePayslip,
   formatRupiah,
-} from '../utils/hrisLogic';
-import { SbumBadgeIcon } from './SbumLogo';
+} from '../../utils/hrisLogic';
+import { SbumBadgeIcon } from '../../shared/SbumLogo';
 
 interface DocumentsViewProps {
   activeSubTab: DocumentSubTab;
@@ -29,7 +28,16 @@ const PAYSLIP_PERIODS = [
 ];
 
 export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewProps) {
-  const { currentUser, attendance, overtimes, signContract, updateEmployeeProfile } = useHris();
+  const {
+    currentUser,
+    attendance,
+    overtimes,
+    payslipComponents,
+    payrollSettings,
+    signContract,
+    updateEmployeeProfile,
+    shiftTemplateFor,
+  } = useHris();
 
   const [selectedPeriod, setSelectedPeriod] = useState(PAYSLIP_PERIODS[0]);
   const [phone, setPhone] = useState(currentUser?.phone ?? '');
@@ -51,9 +59,18 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
       selectedPeriod.key,
       selectedPeriod.label,
       attendance,
-      overtimes
+      overtimes,
+      payslipComponents,
+      payrollSettings
     );
-  }, [currentUser, selectedPeriod, attendance, overtimes]);
+  }, [
+    currentUser,
+    selectedPeriod,
+    attendance,
+    overtimes,
+    payslipComponents,
+    payrollSettings,
+  ]);
 
   if (!currentUser || !payslip) return null;
 
@@ -185,32 +202,14 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
                 Penerimaan (Earnings)
               </h2>
               <div className="space-y-2 text-xs sm:text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Gaji Pokok</span>
-                  <span className="font-mono font-bold text-slate-900 tabular-nums">
-                    {formatRupiah(payslip.baseSalary)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Tunjangan Jabatan</span>
-                  <span className="font-mono font-bold text-slate-900 tabular-nums">
-                    {formatRupiah(payslip.positionAllowance)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Tunjangan Makan &amp; Transport</span>
-                  <span className="font-mono font-bold text-slate-900 tabular-nums">
-                    {formatRupiah(payslip.mealTransportAllowance)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">
-                    Insentif Lembur ({payslip.overtimeHours} jam)
-                  </span>
-                  <span className="font-mono font-bold text-emerald-700 tabular-nums">
-                    {formatRupiah(payslip.overtimePay)}
-                  </span>
-                </div>
+                {payslip.earnings.map((line) => (
+                  <div key={line.code} className="flex justify-between gap-3">
+                    <span className="text-slate-600">{line.label}</span>
+                    <span className="font-mono font-bold text-slate-900 tabular-nums whitespace-nowrap">
+                      {formatRupiah(line.amount)}
+                    </span>
+                  </div>
+                ))}
                 <div className="pt-2 border-t border-slate-200 flex justify-between font-extrabold text-[#0B2453]">
                   <span>Total Penerimaan</span>
                   <span className="font-mono tabular-nums">{formatRupiah(payslip.grossPay)}</span>
@@ -223,26 +222,18 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
                 Potongan (Deductions)
               </h2>
               <div className="space-y-2 text-xs sm:text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-600">BPJS Kesehatan (1%)</span>
-                  <span className="font-mono font-bold text-slate-900 tabular-nums">
-                    {formatRupiah(payslip.bpjsKesehatan)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">BPJS Ketenagakerjaan JHT (2%)</span>
-                  <span className="font-mono font-bold text-slate-900 tabular-nums">
-                    {formatRupiah(payslip.bpjsKetenagakerjaan)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">
-                    Potongan Keterlambatan ({payslip.lateMinutesTotal} mnt)
-                  </span>
-                  <span className="font-mono font-bold text-rose-700 tabular-nums">
-                    {formatRupiah(payslip.lateDeduction)}
-                  </span>
-                </div>
+                {payslip.deductions.length === 0 ? (
+                  <p className="text-xs text-slate-500">Tidak ada potongan pada periode ini.</p>
+                ) : (
+                  payslip.deductions.map((line) => (
+                    <div key={line.code} className="flex justify-between gap-3">
+                      <span className="text-slate-600">{line.label}</span>
+                      <span className="font-mono font-bold text-rose-700 tabular-nums whitespace-nowrap">
+                        −{formatRupiah(line.amount)}
+                      </span>
+                    </div>
+                  ))
+                )}
                 <div className="pt-2 border-t border-slate-200 flex justify-between font-extrabold text-rose-700">
                   <span>Total Potongan</span>
                   <span className="font-mono tabular-nums">
@@ -343,7 +334,7 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
               <div>
                 <span className="text-slate-500">Shift Penempatan:</span>{' '}
                 <strong className="text-[#0B2453]">
-                  {SHIFT_TEMPLATES[currentUser.shiftCode].label}
+                  {shiftTemplateFor(currentUser.shiftCode, currentUser.division).label}
                 </strong>
               </div>
               <div>

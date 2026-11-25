@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Foto absensi ber-watermark GPS + timestamp.
+// Path: attendance/{uid}/{yyyy-mm-dd}/{in|out}.jpg
+//   - Karyawan menulis & membaca fotonya sendiri.
+//   - HRD (klaim `role == 'hrd'` dari Cloud Function) membaca semua foto.
+//   - Selain itu ditolak (default-deny).
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /attendance/{uid}/{date}/{kind} {
+      allow read: if request.auth != null &&
+        (request.auth.uid == uid || request.auth.token.role == 'hrd');
+
+      allow create, update: if request.auth != null &&
+        request.auth.uid == uid &&
+        kind in ['in', 'out'] &&
+        request.resource.size > 0 &&
+        request.resource.size < 1024 * 1024 &&
+        request.resource.contentType == 'image/jpeg';
+
+      // Bukti absensi bersifat append-only: tidak boleh dihapus dari klien.
+      allow delete: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

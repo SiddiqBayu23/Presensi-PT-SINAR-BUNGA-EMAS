@@ -62,19 +62,25 @@
         },
         "division": {
           "type": "string",
-          "enum": ["HRD", "Security", "Cleaning Service", "Operasional", "Keuangan"],
+          "pattern": "^.{2,32}$",
           "maxLength": 32,
           "description": "Company division"
         },
         "role": {
           "type": "string",
-          "enum": ["hrd", "employee"],
+          "enum": ["hrd", "supervisor", "employee"],
           "maxLength": 16,
-          "description": "Access role (immutable by non-admins)"
+          "description": "Access role: hrd (admin), supervisor (team approval), employee (karyawan); immutable by non-admins"
+        },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$",
+          "description": "Direct supervisor UID (active supervisor in the same division) or empty for direct-to-HRD routing"
         },
         "shiftCode": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
           "maxLength": 16,
           "description": "Assigned work shift template"
         },
@@ -93,6 +99,11 @@
           "type": "string",
           "maxLength": 240,
           "description": "Residential address (PII)"
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 400000,
+          "description": "Square profile photo as an image data URL (cropped 1:1, JPEG)"
         },
         "joinDate": {
           "type": "string",
@@ -210,7 +221,7 @@
         },
         "shiftCode": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
           "maxLength": 16
         },
         "clockInTime": {
@@ -260,6 +271,12 @@
           "type": "string",
           "enum": ["Tepat Waktu", "Terlambat", "Selesai", "Belum Pulang"],
           "maxLength": 24
+        },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$",
+          "description": "Supervisor UID at clock-in time (must match own employee doc supervisorUid) for supervisor read scoping"
         },
         "createdAt": {
           "type": "string",
@@ -357,6 +374,11 @@
           "type": "string",
           "maxLength": 100
         },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -446,6 +468,11 @@
           "type": "string",
           "maxLength": 100
         },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -506,12 +533,12 @@
         },
         "fromShift": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
           "maxLength": 16
         },
         "toShift": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
           "maxLength": 16
         },
         "reason": {
@@ -531,6 +558,11 @@
         "reviewedBy": {
           "type": "string",
           "maxLength": 100
+        },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$"
         },
         "createdAt": {
           "type": "string",
@@ -615,6 +647,11 @@
           "type": "string",
           "maxLength": 100
         },
+        "supervisorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -663,7 +700,7 @@
         },
         "shiftCode": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM"],
+          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
           "maxLength": 16
         },
         "location": {

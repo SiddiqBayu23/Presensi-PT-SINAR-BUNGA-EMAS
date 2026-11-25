@@ -4,33 +4,28 @@ import type {
   ExitClearanceRequest,
   LeaveRequest,
   OvertimeRequest,
+  PayrollSettings,
+  PayslipComponent,
   ScheduleEntry,
   ShiftSwapRequest,
+  UserRole,
 } from '../types/hris';
-import {
-  buildAttendanceCsv,
-  calculatePayslip,
-  formatRupiah,
-} from './hrisLogic';
+import { DEFAULT_PAYROLL_SETTINGS, calculatePayslip, formatRupiah } from './hrisLogic';
 
-const UTF8_BOM = '\uFEFF';
+/** MIME SpreadsheetML; dipakai semua unduhan agar Excel langsung membuka berkas .xls. */
+export const EXCEL_MIME = 'application/vnd.ms-excel;charset=utf-8;';
 
-function csvEscape(val: string | number | boolean | undefined | null): string {
-  const str = String(val ?? '');
-  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
-}
+/** Label peran pada berkas ekspor (3 peran aplikasi). */
+const ROLE_EXPORT_LABELS: Record<UserRole, string> = {
+  hrd: 'HRD Admin',
+  supervisor: 'Supervisor',
+  employee: 'Karyawan',
+};
 
-function toCsv(headers: string[], rows: Array<Array<string | number | boolean | undefined | null>>): string {
-  return (
-    UTF8_BOM +
-    [
-      headers.map(csvEscape).join(','),
-      ...rows.map((row) => row.map(csvEscape).join(',')),
-    ].join('\n')
-  );
+export interface ExcelSheet {
+  name: string;
+  headers: string[];
+  rows: Array<Array<string | number>>;
 }
 
 function xmlEscape(val: string | number | boolean | undefined | null): string {
@@ -40,262 +35,6 @@ function xmlEscape(val: string | number | boolean | undefined | null): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-export function buildAttendanceCsvWithBom(records: AttendanceRecord[]): string {
-  return UTF8_BOM + buildAttendanceCsv(records);
-}
-
-export function buildEmployeesCsv(employees: Employee[]): string {
-  const headers = [
-    'NIK',
-    'Nama Lengkap',
-    'Jabatan',
-    'Divisi',
-    'Peran',
-    'Shift',
-    'Email',
-    'No HP',
-    'Tanggal Gabung',
-    'Jenis Kontrak',
-    'Akhir Kontrak',
-    'Kontrak Ditandatangani',
-    'Gaji Pokok',
-    'Tunjangan Jabatan',
-    'Tunjangan Makan & Transport',
-    'Sisa Cuti',
-    'Status Aktif',
-  ];
-  const rows = employees.map((e) => [
-    e.nik,
-    e.name,
-    e.position,
-    e.division,
-    e.role === 'hrd' ? 'HRD Admin' : 'Karyawan',
-    e.shiftCode,
-    e.email,
-    e.phone,
-    e.joinDate,
-    e.contractType,
-    e.contractEnd,
-    e.contractSigned ? 'Sudah' : 'Belum',
-    e.baseSalary,
-    e.positionAllowance,
-    e.mealTransportAllowance,
-    e.leaveQuota,
-    e.active ? 'Aktif' : 'Nonaktif',
-  ]);
-  return toCsv(headers, rows);
-}
-
-export function buildLeavesCsv(leaves: LeaveRequest[]): string {
-  const headers = [
-    'ID',
-    'NIK',
-    'Nama Karyawan',
-    'Divisi',
-    'Jenis',
-    'Tanggal Mulai',
-    'Tanggal Selesai',
-    'Jumlah Hari',
-    'Alasan',
-    'Status',
-    'Diajukan Pada',
-    'Diproses Oleh',
-  ];
-  const rows = leaves.map((l) => [
-    l.id,
-    l.nik,
-    l.employeeName,
-    l.division,
-    l.type,
-    l.startDate,
-    l.endDate,
-    l.days,
-    l.reason,
-    l.status,
-    l.createdLabel,
-    l.reviewedBy || '-',
-  ]);
-  return toCsv(headers, rows);
-}
-
-export function buildOvertimesCsv(overtimes: OvertimeRequest[]): string {
-  const headers = [
-    'ID',
-    'NIK',
-    'Nama Karyawan',
-    'Divisi',
-    'Tanggal',
-    'Jam Mulai',
-    'Jam Selesai',
-    'Durasi (Jam)',
-    'Estimasi Insentif (Rp)',
-    'Uraian Pekerjaan',
-    'Status',
-    'Diproses Oleh',
-  ];
-  const rows = overtimes.map((o) => [
-    o.id,
-    o.nik,
-    o.employeeName,
-    o.division,
-    o.date,
-    o.startTime,
-    o.endTime,
-    o.hours,
-    o.estimatedPay,
-    o.reason,
-    o.status,
-    o.reviewedBy || '-',
-  ]);
-  return toCsv(headers, rows);
-}
-
-export function buildShiftSwapsCsv(swaps: ShiftSwapRequest[]): string {
-  const headers = [
-    'ID',
-    'NIK',
-    'Nama Karyawan',
-    'Divisi',
-    'Tanggal Efektif',
-    'Shift Asal',
-    'Shift Tujuan',
-    'Alasan',
-    'Status',
-    'Diajukan Pada',
-    'Diproses Oleh',
-  ];
-  const rows = swaps.map((s) => [
-    s.id,
-    s.nik,
-    s.employeeName,
-    s.division,
-    s.date,
-    s.fromShift,
-    s.toShift,
-    s.reason,
-    s.status,
-    s.createdLabel,
-    s.reviewedBy || '-',
-  ]);
-  return toCsv(headers, rows);
-}
-
-export function buildExitClearancesCsv(exits: ExitClearanceRequest[]): string {
-  const headers = [
-    'ID',
-    'NIK',
-    'Nama Karyawan',
-    'Jabatan',
-    'Divisi',
-    'Hari Kerja Terakhir',
-    'Alasan',
-    'Checklist Selesai',
-    'Status',
-    'Diajukan Pada',
-    'Diproses Oleh',
-  ];
-  const rows = exits.map((ex) => {
-    const done = ex.checklist.filter((c) => c.cleared).length;
-    return [
-      ex.id,
-      ex.nik,
-      ex.employeeName,
-      ex.position,
-      ex.division,
-      ex.lastWorkingDate,
-      ex.reason,
-      `${done}/${ex.checklist.length}`,
-      ex.status,
-      ex.createdLabel,
-      ex.reviewedBy || '-',
-    ];
-  });
-  return toCsv(headers, rows);
-}
-
-export function buildSchedulesCsv(schedules: ScheduleEntry[]): string {
-  const headers = ['ID', 'NIK', 'Tanggal', 'Shift', 'Lokasi Penugasan', 'Catatan', 'Status Tugas'];
-  const rows = schedules.map((s) => [
-    s.id,
-    s.nik,
-    s.date,
-    s.shiftCode,
-    s.location,
-    s.notes || '-',
-    s.patrolCompleted ? 'Selesai' : 'Terjadwal',
-  ]);
-  return toCsv(headers, rows);
-}
-
-export function buildPayrollRecapCsv(
-  employees: Employee[],
-  periodKey: string,
-  periodLabel: string,
-  attendance: AttendanceRecord[],
-  overtimes: OvertimeRequest[]
-): string {
-  const headers = [
-    'Periode',
-    'NIK',
-    'Nama Karyawan',
-    'Divisi',
-    'Hari Hadir',
-    'Gaji Pokok',
-    'Tunjangan Jabatan',
-    'Tunjangan Makan & Transport',
-    'Jam Lembur Disetujui',
-    'Insentif Lembur',
-    'Total Penerimaan',
-    'BPJS Kesehatan (1%)',
-    'BPJS TK JHT (2%)',
-    'Potongan Terlambat',
-    'Total Potongan',
-    'Take Home Pay',
-  ];
-  const rows = employees.map((emp) => {
-    const slip = calculatePayslip(emp, periodKey, periodLabel, attendance, overtimes);
-    return [
-      slip.periodLabel,
-      emp.nik,
-      emp.name,
-      emp.division,
-      slip.attendanceDays,
-      slip.baseSalary,
-      slip.positionAllowance,
-      slip.mealTransportAllowance,
-      slip.overtimeHours,
-      slip.overtimePay,
-      slip.grossPay,
-      slip.bpjsKesehatan,
-      slip.bpjsKetenagakerjaan,
-      slip.lateDeduction,
-      slip.totalDeductions,
-      slip.netPay,
-    ];
-  });
-  return toCsv(headers, rows);
-}
-
-export interface FullExportDataset {
-  exportedAtWib: string;
-  periodKey: string;
-  periodLabel: string;
-  scopeLabel: string;
-  employees: Employee[];
-  attendance: AttendanceRecord[];
-  leaves: LeaveRequest[];
-  overtimes: OvertimeRequest[];
-  shiftSwaps: ShiftSwapRequest[];
-  exitClearances: ExitClearanceRequest[];
-  schedules: ScheduleEntry[];
-}
-
-interface ExcelSheet {
-  name: string;
-  headers: string[];
-  rows: Array<Array<string | number>>;
 }
 
 function renderExcelWorksheet(sheet: ExcelSheet): string {
@@ -324,6 +63,352 @@ ${bodyRows}
 }
 
 /**
+ * Membungkus satu atau beberapa worksheet menjadi workbook SpreadsheetML (.xls)
+ * yang dapat dibuka Microsoft Excel / Google Sheets tanpa dialog impor.
+ */
+export function renderExcelWorkbook(sheets: ExcelSheet[]): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Styles>
+  <Style ss:ID="Header">
+    <Font ss:Bold="1" ss:Color="#FFFFFF"/>
+    <Interior ss:Color="#0B2453" ss:Pattern="Solid"/>
+  </Style>
+</Styles>
+${sheets.map(renderExcelWorksheet).join('\n')}
+</Workbook>`;
+}
+
+export function buildAttendanceExcel(records: AttendanceRecord[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Absensi',
+      headers: [
+        'Tanggal',
+        'NIK',
+        'Nama Karyawan',
+        'Divisi',
+        'Shift',
+        'Jam Masuk',
+        'Jam Pulang',
+        'Terlambat (Menit)',
+        'Durasi Kerja (Menit)',
+        'Status',
+        'Kamera Live',
+        'Lokasi Masuk',
+        'Koordinat Masuk',
+      ],
+      rows: records.map((r) => [
+        r.date,
+        r.nik,
+        r.employeeName,
+        r.division,
+        r.shiftCode,
+        r.clockInTime || '-',
+        r.clockOutTime || '-',
+        r.lateMinutes,
+        r.workMinutes,
+        r.status,
+        r.clockInPhotoVerified ? 'Terverifikasi' : '-',
+        r.clockInAddress || '-',
+        `${r.clockInLat.toFixed(5)}, ${r.clockInLng.toFixed(5)}`,
+      ]),
+    },
+  ]);
+}
+
+export function buildEmployeesExcel(employees: Employee[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Karyawan',
+      headers: [
+        'NIK',
+        'Nama Lengkap',
+        'Jabatan',
+        'Divisi',
+        'Peran',
+        'Shift',
+        'Email',
+        'No HP',
+        'Tanggal Gabung',
+        'Jenis Kontrak',
+        'Akhir Kontrak',
+        'Kontrak Ditandatangani',
+        'Gaji Pokok',
+        'Tunjangan Jabatan',
+        'Tunjangan Makan & Transport',
+        'Sisa Cuti',
+        'Status Aktif',
+      ],
+      rows: employees.map((e) => [
+        e.nik,
+        e.name,
+        e.position,
+        e.division,
+        ROLE_EXPORT_LABELS[e.role] ?? 'Karyawan',
+        e.shiftCode,
+        e.email,
+        e.phone,
+        e.joinDate,
+        e.contractType,
+        e.contractEnd,
+        e.contractSigned ? 'Sudah' : 'Belum',
+        e.baseSalary,
+        e.positionAllowance,
+        e.mealTransportAllowance,
+        e.leaveQuota,
+        e.active ? 'Aktif' : 'Nonaktif',
+      ]),
+    },
+  ]);
+}
+
+export function buildLeavesExcel(leaves: LeaveRequest[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Izin dan Cuti',
+      headers: [
+        'ID',
+        'NIK',
+        'Nama Karyawan',
+        'Divisi',
+        'Jenis',
+        'Tanggal Mulai',
+        'Tanggal Selesai',
+        'Jumlah Hari',
+        'Alasan',
+        'Status',
+        'Diajukan Pada',
+        'Diproses Oleh',
+      ],
+      rows: leaves.map((l) => [
+        l.id,
+        l.nik,
+        l.employeeName,
+        l.division,
+        l.type,
+        l.startDate,
+        l.endDate,
+        l.days,
+        l.reason,
+        l.status,
+        l.createdLabel,
+        l.reviewedBy || '-',
+      ]),
+    },
+  ]);
+}
+
+export function buildOvertimesExcel(overtimes: OvertimeRequest[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Lembur',
+      headers: [
+        'ID',
+        'NIK',
+        'Nama Karyawan',
+        'Divisi',
+        'Tanggal',
+        'Jam Mulai',
+        'Jam Selesai',
+        'Durasi (Jam)',
+        'Estimasi Insentif (Rp)',
+        'Uraian Pekerjaan',
+        'Status',
+        'Diproses Oleh',
+      ],
+      rows: overtimes.map((o) => [
+        o.id,
+        o.nik,
+        o.employeeName,
+        o.division,
+        o.date,
+        o.startTime,
+        o.endTime,
+        o.hours,
+        o.estimatedPay,
+        o.reason,
+        o.status,
+        o.reviewedBy || '-',
+      ]),
+    },
+  ]);
+}
+
+export function buildShiftSwapsExcel(swaps: ShiftSwapRequest[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Tukar Shift',
+      headers: [
+        'ID',
+        'NIK',
+        'Nama Karyawan',
+        'Divisi',
+        'Tanggal Efektif',
+        'Shift Asal',
+        'Shift Tujuan',
+        'Alasan',
+        'Status',
+        'Diajukan Pada',
+        'Diproses Oleh',
+      ],
+      rows: swaps.map((s) => [
+        s.id,
+        s.nik,
+        s.employeeName,
+        s.division,
+        s.date,
+        s.fromShift,
+        s.toShift,
+        s.reason,
+        s.status,
+        s.createdLabel,
+        s.reviewedBy || '-',
+      ]),
+    },
+  ]);
+}
+
+export function buildExitClearancesExcel(exits: ExitClearanceRequest[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Exit Clearance',
+      headers: [
+        'ID',
+        'NIK',
+        'Nama Karyawan',
+        'Jabatan',
+        'Divisi',
+        'Hari Kerja Terakhir',
+        'Alasan',
+        'Checklist Selesai',
+        'Status',
+        'Diajukan Pada',
+        'Diproses Oleh',
+      ],
+      rows: exits.map((ex) => {
+        const done = ex.checklist.filter((c) => c.cleared).length;
+        return [
+          ex.id,
+          ex.nik,
+          ex.employeeName,
+          ex.position,
+          ex.division,
+          ex.lastWorkingDate,
+          ex.reason,
+          `${done}/${ex.checklist.length}`,
+          ex.status,
+          ex.createdLabel,
+          ex.reviewedBy || '-',
+        ];
+      }),
+    },
+  ]);
+}
+
+export function buildSchedulesExcel(schedules: ScheduleEntry[]): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Jadwal',
+      headers: ['ID', 'NIK', 'Tanggal', 'Shift', 'Lokasi Penugasan', 'Catatan', 'Status Tugas'],
+      rows: schedules.map((s) => [
+        s.id,
+        s.nik,
+        s.date,
+        s.shiftCode,
+        s.location,
+        s.notes || '-',
+        s.patrolCompleted ? 'Selesai' : 'Terjadwal',
+      ]),
+    },
+  ]);
+}
+
+export function buildPayrollRecapExcel(
+  employees: Employee[],
+  periodKey: string,
+  periodLabel: string,
+  attendance: AttendanceRecord[],
+  overtimes: OvertimeRequest[],
+  components: PayslipComponent[] = [],
+  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS
+): string {
+  return renderExcelWorkbook([
+    {
+      name: 'Rekap Gaji',
+      headers: [
+        'Periode',
+        'NIK',
+        'Nama Karyawan',
+        'Divisi',
+        'Hari Hadir',
+        'Gaji Pokok',
+        'Tunjangan Jabatan',
+        'Tunjangan Makan & Transport',
+        'Jam Lembur Disetujui',
+        'Insentif Lembur',
+        'Total Penerimaan',
+        'BPJS Kesehatan (1%)',
+        'BPJS TK JHT (2%)',
+        'Potongan Terlambat',
+        'Total Potongan',
+        'Take Home Pay',
+      ],
+      rows: employees.map((emp) => {
+        const slip = calculatePayslip(
+          emp,
+          periodKey,
+          periodLabel,
+          attendance,
+          overtimes,
+          components,
+          settings
+        );
+        return [
+          slip.periodLabel,
+          emp.nik,
+          emp.name,
+          emp.division,
+          slip.attendanceDays,
+          slip.baseSalary,
+          slip.positionAllowance,
+          slip.mealTransportAllowance,
+          slip.overtimeHours,
+          slip.overtimePay,
+          slip.grossPay,
+          slip.bpjsKesehatan,
+          slip.bpjsKetenagakerjaan,
+          slip.lateDeduction,
+          slip.totalDeductions,
+          slip.netPay,
+        ];
+      }),
+    },
+  ]);
+}
+
+export interface FullExportDataset {
+  exportedAtWib: string;
+  periodKey: string;
+  periodLabel: string;
+  scopeLabel: string;
+  employees: Employee[];
+  attendance: AttendanceRecord[];
+  leaves: LeaveRequest[];
+  overtimes: OvertimeRequest[];
+  shiftSwaps: ShiftSwapRequest[];
+  exitClearances: ExitClearanceRequest[];
+  schedules: ScheduleEntry[];
+  /** Komponen gaji buatan HRD (BPJS, kasbon, tunjangan) agar rekap sama dengan slip karyawan. */
+  payslipComponents?: PayslipComponent[];
+  payrollSettings?: PayrollSettings;
+}
+
+/**
  * Generates a single Microsoft Excel SpreadsheetML (.xls) workbook containing
  * ALL HRIS & Attendance result tables across 7 dedicated worksheets.
  */
@@ -334,7 +419,9 @@ export function buildExcelWorkbookXml(data: FullExportDataset): string {
       data.periodKey,
       data.periodLabel,
       data.attendance,
-      data.overtimes
+      data.overtimes,
+      data.payslipComponents ?? [],
+      data.payrollSettings ?? DEFAULT_PAYROLL_SETTINGS
     );
     return [
       slip.periodLabel,
@@ -499,20 +586,7 @@ export function buildExcelWorkbookXml(data: FullExportDataset): string {
     },
   ];
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
-<Styles>
-  <Style ss:ID="Header">
-    <Font ss:Bold="1" ss:Color="#FFFFFF"/>
-    <Interior ss:Color="#0B2453" ss:Pattern="Solid"/>
-  </Style>
-</Styles>
-${sheets.map(renderExcelWorksheet).join('\n')}
-</Workbook>`;
+  return renderExcelWorkbook(sheets);
 }
 
 /**
@@ -523,7 +597,15 @@ export function buildFullJsonExport(data: FullExportDataset): string {
     nik: emp.nik,
     name: emp.name,
     division: emp.division,
-    ...calculatePayslip(emp, data.periodKey, data.periodLabel, data.attendance, data.overtimes),
+    ...calculatePayslip(
+      emp,
+      data.periodKey,
+      data.periodLabel,
+      data.attendance,
+      data.overtimes,
+      data.payslipComponents ?? [],
+      data.payrollSettings ?? DEFAULT_PAYROLL_SETTINGS
+    ),
   }));
 
   const payload = {

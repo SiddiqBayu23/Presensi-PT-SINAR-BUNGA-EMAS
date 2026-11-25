@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeftRight,
   CheckCircle2,
@@ -8,14 +8,16 @@ import {
   Square,
   Timer,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
-import type { LeaveRequest, ShiftCode, SubmissionSubTab } from '../types/hris';
+import { useHris } from '../../context/HrisContext';
+import type { LeaveRequest, ShiftCode, SubmissionSubTab } from '../../types/hris';
 import {
   SHIFT_TEMPLATES,
   calculateInclusiveDays,
   calculateOvertimeEstimate,
+  effectiveShiftForDate,
   formatRupiah,
-} from '../utils/hrisLogic';
+  resolveDivisionShiftRule,
+} from '../../utils/hrisLogic';
 
 interface SubmissionsViewProps {
   activeSubTab: SubmissionSubTab;
@@ -35,6 +37,9 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
     submitShiftSwap,
     submitExitClearance,
     toggleExitChecklistItem,
+    divisionShiftRules,
+    schedules,
+    shiftTemplateFor,
   } = useHris();
 
   const [leaveType, setLeaveType] = useState<LeaveRequest['type']>('Cuti Tahunan');
@@ -63,6 +68,29 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
   const myOvertimes = overtimes.filter((o) => o.uid === currentUser.uid);
   const myShiftSwaps = shiftSwaps.filter((s) => s.uid === currentUser.uid);
   const myExits = exitClearances.filter((e) => e.uid === currentUser.uid);
+
+  // Shift efektif pada tanggal pengajuan (jadwal/tukar shift sebelumnya) & shift yang boleh dipakai divisi.
+  const effectiveShift = effectiveShiftForDate(
+    currentUser.uid,
+    swDate,
+    schedules,
+    currentUser.shiftCode
+  );
+  const allowedShiftCodes = resolveDivisionShiftRule(
+    currentUser.division,
+    divisionShiftRules
+  ).allowedShiftCodes;
+  // Shift tujuan yang valid harus berbeda dari shift efektif pada tanggal tersebut.
+  const availableShiftCodes = useMemo(
+    () => allowedShiftCodes.filter((code) => code !== effectiveShift),
+    [allowedShiftCodes, effectiveShift]
+  );
+
+  useEffect(() => {
+    if (availableShiftCodes.length > 0 && !availableShiftCodes.includes(swToShift)) {
+      setSwToShift(availableShiftCodes[0]);
+    }
+  }, [availableShiftCodes, swToShift]);
 
   const previewLeaveDays = calculateInclusiveDays(leaveStart, leaveEnd);
   const previewOt = calculateOvertimeEstimate(otStart, otEnd, currentUser.baseSalary);
@@ -270,7 +298,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || availableShiftCodes.length === 0}
                 className="w-full h-11 rounded-xl bg-[#0B2453] hover:bg-[#163A7A] disabled:opacity-60 text-white text-sm font-bold cursor-pointer"
               >
                 {submitting ? 'Mengirim...' : 'Kirim Pengajuan Izin / Cuti'}
@@ -388,7 +416,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || availableShiftCodes.length === 0}
                 className="w-full h-11 rounded-xl bg-[#0B2453] hover:bg-[#163A7A] disabled:opacity-60 text-white text-sm font-bold cursor-pointer"
               >
                 {submitting ? 'Mengirim...' : 'Kirim Pengajuan Lembur'}
@@ -441,10 +469,14 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
 
             <form onSubmit={handleShiftSwapSubmit} className="space-y-3.5">
               <div className="rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs">
-                Shift Saat Ini:{' '}
+                Shift pada {swDate}:{' '}
                 <strong className="text-[#0B2453]">
-                  {SHIFT_TEMPLATES[currentUser.shiftCode].label}
+                  {shiftTemplateFor(effectiveShift, currentUser.division).label}
                 </strong>
+                <span className="block text-[11px] text-slate-500 mt-0.5">
+                  Shift tersedia untuk divisi {currentUser.division}:{' '}
+                  {allowedShiftCodes.map((code) => SHIFT_TEMPLATES[code].name).join(' • ')}
+                </span>
               </div>
 
               <div>
@@ -460,23 +492,34 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
                 />
               </div>
 
-              <div>
-                <label htmlFor="sw-target" className="block text-xs font-bold text-[#0B2453] mb-1">
-                  Shift Tujuan
-                </label>
-                <select
-                  id="sw-target"
-                  value={swToShift}
-                  onChange={(e) => setSwToShift(e.target.value as ShiftCode)}
-                  className="w-full h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0B2453] focus:outline-none"
-                >
-                  {Object.values(SHIFT_TEMPLATES).map((t) => (
-                    <option key={t.code} value={t.code}>
-                      {t.name} ({t.startTime}-{t.endTime})
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {availableShiftCodes.length === 0 ? (
+                <div className="rounded-xl bg-amber-50 border border-amber-300 p-3 text-xs text-amber-900 leading-relaxed">
+                  Divisi <strong>{currentUser.division}</strong> saat ini hanya memiliki 1 aturan shift (
+                  {SHIFT_TEMPLATES[effectiveShift]?.name ?? effectiveShift}), sehingga belum ada shift alternatif
+                  lain untuk ditukar. Hubungi Admin HRD untuk menambah shift divisi.
+                </div>
+              ) : (
+                <div>
+                  <label htmlFor="sw-target" className="block text-xs font-bold text-[#0B2453] mb-1">
+                    Shift Tujuan
+                  </label>
+                  <select
+                    id="sw-target"
+                    value={swToShift}
+                    onChange={(e) => setSwToShift(e.target.value as ShiftCode)}
+                    className="w-full h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0B2453] focus:outline-none"
+                  >
+                    {availableShiftCodes.map((code) => {
+                      const tpl = shiftTemplateFor(code, currentUser.division);
+                      return (
+                        <option key={code} value={code}>
+                          {tpl.name} ({tpl.startTime}-{tpl.endTime})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label htmlFor="sw-reason" className="block text-xs font-bold text-[#0B2453] mb-1">
@@ -495,7 +538,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || availableShiftCodes.length === 0}
                 className="w-full h-11 rounded-xl bg-[#0B2453] hover:bg-[#163A7A] disabled:opacity-60 text-white text-sm font-bold cursor-pointer"
               >
                 {submitting ? 'Mengirim...' : 'Kirim Pengajuan Tukar Shift'}

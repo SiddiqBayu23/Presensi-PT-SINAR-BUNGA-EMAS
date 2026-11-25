@@ -9,21 +9,46 @@ import {
   MapPin,
   ShieldCheck,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
-import type { SubmissionSubTab } from '../types/hris';
-import { SHIFT_TEMPLATES, formatIndonesianDateFromIso } from '../utils/hrisLogic';
+import { useHris } from '../../context/HrisContext';
+import type { SubmissionSubTab } from '../../types/hris';
+import {
+  effectiveShiftForDate,
+  formatIndonesianDateFromIso,
+  resolveDivisionShiftRule,
+} from '../../utils/hrisLogic';
 
 interface ScheduleViewProps {
   onOpenShiftSwap: (sub: SubmissionSubTab) => void;
 }
 
 export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
-  const { currentUser, schedules, togglePatrolComplete } = useHris();
+  const {
+    currentUser,
+    schedules,
+    togglePatrolComplete,
+    divisionShiftRules,
+    shiftTemplateFor,
+    wibNow,
+  } = useHris();
 
   if (!currentUser) return null;
 
-  const mySchedules = schedules.filter((s) => s.uid === currentUser.uid);
-  const currentShift = SHIFT_TEMPLATES[currentUser.shiftCode];
+  const mySchedules = schedules
+    .filter((s) => s.uid === currentUser.uid)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  // Shift aktif hari ini mengikuti jadwal (hasil penugasan/tukar shift), bukan hanya profil.
+  const todayShiftCode = effectiveShiftForDate(
+    currentUser.uid,
+    wibNow.isoDate,
+    schedules,
+    currentUser.shiftCode
+  );
+  const currentShift = shiftTemplateFor(todayShiftCode, currentUser.division);
+  // Hanya shift yang memang berlaku untuk divisi karyawan ini.
+  const divisionShiftCodes = resolveDivisionShiftRule(
+    currentUser.division,
+    divisionShiftRules
+  ).allowedShiftCodes;
 
   return (
     <div className="space-y-5">
@@ -36,9 +61,18 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
               <h1 className="text-lg font-extrabold text-[#0B2453]">Schedule &amp; Jadwal Shift</h1>
             </div>
             <p className="mt-1 text-xs sm:text-sm text-slate-600">
-              Shift Aktif Anda:{' '}
+              Shift Aktif Hari Ini:{' '}
               <strong className="text-[#0B2453]">{currentShift.label}</strong> &bull; Toleransi{' '}
               {currentShift.toleranceMinutes} menit
+            </p>
+            <p className="mt-0.5 text-[11px] text-slate-500">
+              Jam kerja divisi {currentUser.division}:{' '}
+              {divisionShiftCodes
+                .map((code) => {
+                  const tpl = shiftTemplateFor(code, currentUser.division);
+                  return `${tpl.startTime}–${tpl.endTime}`;
+                })
+                .join(' • ')}
             </p>
           </div>
           <button
@@ -53,8 +87,9 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
 
         {/* All Shift Templates */}
         <div className="mt-5 grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {Object.values(SHIFT_TEMPLATES).map((tpl) => {
-            const isMine = tpl.code === currentUser.shiftCode;
+          {divisionShiftCodes.map((code) => {
+            const tpl = shiftTemplateFor(code, currentUser.division);
+            const isMine = code === todayShiftCode;
             return (
               <div
                 key={tpl.code}
@@ -94,7 +129,7 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
           ) : (
             <div className="space-y-3">
               {mySchedules.map((sch) => {
-                const tpl = SHIFT_TEMPLATES[sch.shiftCode];
+                const tpl = shiftTemplateFor(sch.shiftCode, currentUser.division);
                 return (
                   <div
                     key={sch.id}

@@ -1,6 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  createUserWithEmailAndPassword,
   onAuthStateChanged,
   reload,
   sendEmailVerification,
@@ -9,11 +8,11 @@ import {
   signInWithPopup,
   signOut,
   updatePassword,
-  updateProfile,
   type User,
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
@@ -30,56 +29,141 @@ import {
   db,
   googleProvider,
   handleFirestoreError,
+  provisionEmployeeAccount,
+  uploadAttendancePhoto,
 } from '../firebase';
 import type {
   ApprovalStatus,
   AttendanceRecord,
   Division,
+  DivisionShiftRule,
   Employee,
   ExitClearanceRequest,
   LeaveRequest,
   OvertimeRequest,
+  PayrollSettings,
+  PayslipComponent,
   ScheduleEntry,
   ShiftCode,
   ShiftSwapRequest,
+  ShiftTemplate,
+  ShiftTolerance,
+  UserRole,
+  ThemeMode,
+  TodoTask,
+  TodoStatus,
+  ReportType,
+  WibComponents,
 } from '../types/hris';
 import {
+  DEFAULT_DIVISION_SHIFT_RULES,
+  DEFAULT_PAYROLL_SETTINGS,
+  SHIFT_TEMPLATES,
   calculateInclusiveDays,
   calculateLateMinutes,
   calculateOvertimeEstimate,
   calculateWorkMinutes,
+  defaultShiftForDivision,
+  effectiveShiftForDate,
+  findApprovedLeaveOnDate,
+  findScheduleConflict,
   generateEmployeeNik,
   getDivisionCompensationDefaults,
   getWibComponents,
+  isShiftAllowedForDivision,
   isValidEmailAddress,
+  normalizeShiftTime,
+  resolveDivisionShiftRule,
+  resolveShiftTemplate,
   sanitizeString,
+  shiftTemplateForDivision,
+  validateClockIn,
+  validateClockOut,
+  validateShiftSwap,
 } from '../utils/hrisLogic';
 
-const ONBOARDING_DRAFT_KEY = 'sbum_onboarding_draft_v2';
 const LOCAL_PHOTO_KEY = 'sbum_local_watermark_photos_v2';
+const LOCAL_DIVISIONS_KEY = 'sbum_hris_divisions_v1';
+const LOCAL_TODOS_KEY = 'sbum_hris_todos_v1';
+const LOCAL_DIVISION_SHIFT_RULES_KEY = 'sbum_hris_division_shift_rules_v1';
+const LOCAL_PAYSLIP_COMPONENTS_KEY = 'sbum_hris_payslip_components_v1';
+const LOCAL_PAYROLL_SETTINGS_KEY = 'sbum_hris_payroll_settings_v1';
+/** Snapshot workspace mode konsol agar data yang diinput HRD tidak hilang saat refresh. */
 
-interface OnboardingDraft {
-  name: string;
-  division: Division;
-  shiftCode: ShiftCode;
-  position: string;
+/** Preferensi tema tampilan (terang/gelap) yang dipilih user; bertahan lintas sesi. */
+const LOCAL_THEME_KEY = 'sbum_theme_v1';
+
+/** Baca tema tersimpan; jatuh ke preferensi sistem bila belum pernah dipilih. */
+function loadStoredTheme(): ThemeMode {
+  try {
+    const raw = localStorage.getItem(LOCAL_THEME_KEY);
+    if (raw === 'dark' || raw === 'light') return raw;
+  } catch {
+    // Abaikan storage yang tidak tersedia.
+  }
+  try {
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
 }
 
-export interface EmailRegisterInput {
-  email: string;
-  password: string;
-  name: string;
-  division: Division;
-  shiftCode: ShiftCode;
-  position?: string;
+function loadStoredJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
 }
+
+function saveStoredJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore storage quota / privacy errors
+  }
+}
+
+function loadStoredArray<T>(key: string, fallback: T[]): T[] {
+  const parsed = loadStoredJson<unknown>(key, null);
+  return Array.isArray(parsed) ? (parsed as T[]) : fallback;
+}
+
+function loadStoredRecord<T extends object>(key: string, fallback: T): T {
+  const parsed = loadStoredJson<unknown>(key, null);
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return { ...fallback, ...(parsed as T) };
+  }
+  return fallback;
+}
+
+/** Bawaan komponen gaji divisi bila HRD belum pernah menyimpan pengaturan. */
+function loadDivisionShiftRules(): DivisionShiftRule[] {
+  const parsed = loadStoredJson<unknown>(LOCAL_DIVISION_SHIFT_RULES_KEY, null);
+  if (Array.isArray(parsed) && parsed.length > 0) return parsed as DivisionShiftRule[];
+  return DEFAULT_DIVISION_SHIFT_RULES;
+}
+
+/** Komponen gaji contoh agar fitur payroll per divisi/karyawan langsung dapat diuji. */
+
+
+/** Todo contoh: satu format, dua format, dan tiga format untuk menguji laporan multi-format. */
+
+
+
 
 export interface HrdAddEmployeeInput {
+  role?: UserRole;
+  supervisorUid?: string;
   email: string;
   name: string;
   position: string;
   division: Division;
   shiftCode: ShiftCode;
+  /** Kata sandi awal akun login karyawan (wajib saat sinkron Firebase). */
+  initialPassword?: string;
 }
 
 export interface ClockPayload {
@@ -94,18 +178,12 @@ type AsyncResult<T = void> = Promise<
   (T extends void ? { ok: true } : { ok: true } & T) | { ok: false; error: string }
 >;
 
-export interface AdminSessionInfo {
-  username: string;
-  name: string;
-  nik: string;
-  role: 'hrd';
-}
+/** Cakupan data Firestore per role: HRD semua, supervisor sendiri+bawahan, karyawan sendiri. */
+type CollectionScope = 'all' | 'own' | 'supervised';
 
 interface HrisContextValue {
   authReady: boolean;
   firebaseUser: User | null;
-  adminSession: AdminSessionInfo | null;
-  isAdminSession: boolean;
   isFirebaseSynced: boolean;
   needsEmailVerification: boolean;
   employees: Employee[];
@@ -117,21 +195,42 @@ interface HrisContextValue {
   exitClearances: ExitClearanceRequest[];
   schedules: ScheduleEntry[];
   localPhotos: Record<string, { in?: string; out?: string }>;
-  wibNow: ReturnType<typeof getWibComponents>;
+  wibNow: WibComponents;
+  /** Tema tampilan aktif: 'light' (terang) atau 'dark' (gelap). */
+  theme: ThemeMode;
+  setTheme: (mode: ThemeMode) => void;
+  toggleTheme: () => void;
   loginWithEmail: (email: string, password: string) => AsyncResult;
-  loginAsAdmin: (username: string, password: string) => AsyncResult;
-  registerWithEmail: (input: EmailRegisterInput) => AsyncResult<{ needsVerification: boolean }>;
   loginWithGoogle: () => AsyncResult;
   sendResetPassword: (email: string) => AsyncResult;
   resendVerificationEmail: () => AsyncResult;
   refreshAuthUser: () => AsyncResult<{ verified: boolean }>;
   changePassword: (newPassword: string) => AsyncResult;
-  changeAdminPassword: (currentPassword: string, newPassword: string) => AsyncResult;
+  /**
+   * Reset kata sandi karyawan oleh Admin HRD: tautan reset dikirim ke email
+   * karyawan karena mengubah sandi user lain butuh Firebase Admin SDK.
+   */
+  resetUserPassword: (uid: string) => AsyncResult<{ username: string }>;
   logout: () => Promise<void>;
+  /** Hak persetujuan pengajuan: HRD semua; supervisor hanya pengajuan yang dirutekan ke dirinya (supervisorUid). */
+  canReview: (ownerUid: string, routedSupervisorUid?: string) => boolean;
   addEmployeeByHrd: (input: HrdAddEmployeeInput) => AsyncResult<{ employee: Employee }>;
   updateEmployeeProfile: (
     uid: string,
-    updates: Partial<Pick<Employee, 'phone' | 'address' | 'shiftCode' | 'division' | 'position' | 'active'>>
+    updates: Partial<
+      Pick<
+        Employee,
+        | 'phone'
+        | 'address'
+        | 'shiftCode'
+        | 'division'
+        | 'position'
+        | 'role'
+        | 'supervisorUid'
+        | 'active'
+        | 'photoUrl'
+      >
+    >
   ) => Promise<void>;
   signContract: (uid: string) => Promise<void>;
   recordClockIn: (payload: ClockPayload) => AsyncResult<{ record: AttendanceRecord }>;
@@ -164,42 +263,113 @@ interface HrisContextValue {
   togglePatrolComplete: (scheduleId: string) => Promise<void>;
   reviewLeave: (id: string, status: ApprovalStatus) => Promise<void>;
   reviewOvertime: (id: string, status: ApprovalStatus) => Promise<void>;
-  reviewShiftSwap: (id: string, status: ApprovalStatus) => Promise<void>;
+  reviewShiftSwap: (id: string, status: ApprovalStatus) => Promise<{ ok: boolean; error?: string }>;
   reviewExitClearance: (id: string, status: ApprovalStatus) => Promise<void>;
+  // Todo List management
+  todos: TodoTask[];
+  addTodoTask: (task: Omit<TodoTask, 'id' | 'createdAt' | 'status'>) => Promise<void>;
+  submitTodoReport: (
+    taskId: string,
+    report: {
+      text?: string;
+      photoName?: string;
+      photoUrl?: string;
+      documentName?: string;
+      documentUrl?: string;
+    }
+  ) => Promise<void>;
+  reviewTodoTask: (taskId: string, status: TodoStatus, notes?: string) => Promise<void>;
+  // Divisi management
+  divisions: string[];
+  addDivision: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Hapus satu divisi beserta aturan jam kerjanya. Karyawan tetap menyimpan nama divisinya sebagai label. */
+  deleteDivision: (division: Division) => Promise<{ ok: boolean; error?: string }>;
+  /** Hapus semua divisi beserta seluruh aturan jam kerjanya. */
+  clearAllDivisions: () => Promise<{ ok: boolean; error?: string }>;
+  /** Aturan jam kerja (shift) per divisi: Security 24 jam, divisi lain sesuai kebijakan. */
+  divisionShiftRules: DivisionShiftRule[];
+  updateDivisionShiftRule: (
+    division: Division,
+    patch: {
+      allowedShiftCodes: ShiftCode[];
+      defaultShiftCode: ShiftCode;
+      /** Jam masuk/pulang khusus divisi ini per shift; kode di luar allowed diabaikan. */
+      shiftTimes?: Partial<Record<ShiftCode, { startTime: string; endTime: string }>>;
+      /** Toleransi absensi (menit) per shift; kode di luar allowed diabaikan. */
+      shiftTolerances?: Partial<Record<ShiftCode, ShiftTolerance>>;
+    }
+  ) => Promise<{ ok: boolean; error?: string }>;
+  /** Template shift (jam masuk/pulang) untuk divisi tertentu; tanpa divisi memakai jam bawaan. */
+  shiftTemplateFor: (code: ShiftCode, division?: Division | null) => ShiftTemplate;
+  /** Admin HRD menambah jadwal karyawan pada tanggal tertentu (shift wajib sesuai divisi). */
+  addScheduleEntry: (input: {
+    uid: string;
+    date: string;
+    shiftCode: ShiftCode;
+    location?: string;
+    notes?: string;
+  }) => AsyncResult;
+  deleteScheduleEntry: (scheduleId: string) => Promise<void>;
+  /** Hapus seluruh baris jadwal (semua karyawan & divisi). */
+  clearAllSchedules: () => Promise<{ ok: boolean; error?: string; deleted: number }>;
+  /** Jadwal massal satu divisi untuk rentang tanggal (jam kerja divisi berbeda-beda). */
+  addScheduleEntriesBulk: (input: {
+    division: Division;
+    startDate: string;
+    endDate: string;
+    shiftCode: ShiftCode;
+    location?: string;
+    notes?: string;
+  }) => AsyncResult<{ created: number; skipped: number }>;
+  // Komponen gaji & pengaturan payroll (dapat diset global / per divisi / per karyawan)
+  payslipComponents: PayslipComponent[];
+  addPayslipComponent: (
+    input: Omit<PayslipComponent, 'id' | 'createdAt'>
+  ) => Promise<{ ok: boolean; error?: string }>;
+  updatePayslipComponent: (
+    id: string,
+    updates: Partial<Omit<PayslipComponent, 'id'>>
+  ) => Promise<{ ok: boolean; error?: string }>;
+  deletePayslipComponent: (id: string) => Promise<void>;
+  payrollSettings: PayrollSettings;
+  updatePayrollSettings: (patch: Partial<PayrollSettings>) => Promise<{ ok: boolean; error?: string }>;
+  /** Izin/cuti disetujui yang mencakup tanggal tertentu: karyawan otomatis tidak dapat absen. */
+  approvedLeaveFor: (uid: string, isoDate: string) => LeaveRequest | null;
+  currentLeaveToday: LeaveRequest | null;
+  // Validasi absensi & Kuota cuti
+  validateAttendance: (recordId: string, status: 'Valid' | 'Ditolak', notes?: string) => Promise<void>;
+  updateLeaveQuota: (uid: string, newQuota: number) => Promise<void>;
+  toggleEmployeeActive: (uid: string, active: boolean) => Promise<void>;
 }
 
 const HrisContext = createContext<HrisContextValue | null>(null);
 
-function createAdminConsoleProfile(admin: AdminSessionInfo): Employee {
-  const nowWib = getWibComponents(new Date());
-  const contractEnd = `${nowWib.year + 2}-${String(nowWib.month + 1).padStart(2, '0')}-${String(nowWib.day).padStart(2, '0')}`;
-  return {
-    uid: 'admin_console',
-    nik: admin.nik,
-    name: admin.name,
-    position: 'HRD & System Administrator',
-    division: 'HRD',
-    role: 'hrd',
-    shiftCode: 'REGULER',
-    email: BOOTSTRAP_ADMIN_EMAIL,
-    phone: '0812-8800-1100',
-    address: 'Kantor Pusat PT Sinar Bunga Mas, Jakarta',
-    joinDate: nowWib.isoDate,
-    contractType: 'PKWTT',
-    contractEnd,
-    contractSigned: true,
-    contractSignedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
-    baseSalary: 8500000,
-    positionAllowance: 1500000,
-    mealTransportAllowance: 1000000,
-    leaveQuota: 12,
-    active: true,
-  };
+
+
+
+
+/** Kode error Firebase (Auth maupun Functions) tanpa mengasumsikan bentuk objeknya. */
+function firebaseErrorCode(err: unknown): string {
+  if (err !== null && typeof err === 'object' && 'code' in err && typeof err.code === 'string') {
+    return err.code;
+  }
+  return '';
 }
 
 function mapFirebaseAuthError(err: unknown): string {
-  const code = (err as { code?: string })?.code ?? '';
+  const code = firebaseErrorCode(err);
   switch (code) {
+    case 'functions/not-found':
+    case 'functions/unimplemented':
+      return 'Cloud Function belum terpasang di project Firebase ini. Jalankan "firebase deploy --only functions" lebih dulu.';
+    case 'functions/permission-denied':
+      return 'Hanya HRD terverifikasi yang boleh membuat akun karyawan.';
+    case 'functions/unauthenticated':
+      return 'Sesi login berakhir. Silakan masuk kembali.';
+    case 'functions/already-exists':
+    case 'functions/invalid-argument':
+    case 'functions/internal':
+      return err instanceof Error ? err.message : 'Cloud Function menolak permintaan.';
     case 'auth/invalid-credential':
     case 'auth/wrong-password':
     case 'auth/user-not-found':
@@ -213,13 +383,34 @@ function mapFirebaseAuthError(err: unknown): string {
     case 'auth/popup-closed-by-user':
       return 'Jendela masuk Google ditutup sebelum selesai.';
     case 'auth/operation-not-allowed':
-      return 'Login Email/Password belum diaktifkan di Firebase Console (Authentication → Sign-in method → Email/Password). Gunakan tombol "Masuk / Daftar dengan Google" atau aktifkan penyedia Email/Password di Firebase Console.';
+      return 'Login Email/Password belum diaktifkan di Firebase Console (Authentication → Sign-in method → Email/Password). Gunakan tombol "Masuk dengan Google" atau aktifkan penyedia Email/Password di Firebase Console.';
     case 'auth/requires-recent-login':
       return 'Demi keamanan, silakan keluar lalu masuk kembali sebelum mengubah kata sandi.';
+    case 'auth/network-request-failed':
+      return 'Tidak dapat terhubung ke Firebase. Periksa koneksi internet Anda lalu coba lagi.';
     case 'auth/too-many-requests':
       return 'Terlalu banyak percobaan. Coba lagi beberapa saat.';
     default:
       return err instanceof Error ? err.message : 'Gagal memproses autentikasi Firebase.';
+  }
+}
+
+/**
+ * Unggah foto absensi ke Cloud Storage (best-effort).
+ * Kegagalan Storage tidak boleh menggagalkan absensi: salinan lokal (sessionStorage)
+ * tetap dipakai UI, dan URL kosong menandai foto belum terarsip.
+ */
+async function uploadPhotoOrEmpty(
+  uid: string,
+  date: string,
+  kind: 'in' | 'out',
+  dataUrl: string
+): Promise<string> {
+  try {
+    return await uploadAttendancePhoto(uid, date, kind, dataUrl);
+  } catch (error) {
+    console.warn('Unggah foto absensi ke Cloud Storage gagal; salinan lokal tetap dipakai.', error);
+    return '';
   }
 }
 
@@ -237,10 +428,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [profileReady, setProfileReady] = useState(false);
-
-  // Server-verified Admin Bearer token held strictly in JS/React memory (never localStorage/sessionStorage)
-  const [adminToken, setAdminToken] = useState<string | null>(null);
-  const [adminSession, setAdminSession] = useState<AdminSessionInfo | null>(null);
+  const [selfRole, setSelfRole] = useState<UserRole | null>(null);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
@@ -253,6 +441,34 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     loadLocalPhotos
   );
   const [wibNow, setWibNow] = useState(() => getWibComponents(new Date()));
+  // Tema tampilan global (terang/gelap) — tersimpan lintas sesi.
+  const [theme, setThemeState] = useState<ThemeMode>(loadStoredTheme);
+
+  // Dynamic divisions managed by HRD
+  const [divisions, setDivisions] = useState<string[]>(() =>
+    loadStoredArray<string>(LOCAL_DIVISIONS_KEY, [
+      'HRD',
+      'Security',
+      'Cleaning Service',
+      'Operasional',
+      'Keuangan',
+    ])
+  );
+
+  // Jam kerja (shift) per divisi: Security 24 jam, Cleaning Service hanya sampai sore, dll.
+  const [divisionShiftRules, setDivisionShiftRules] = useState<DivisionShiftRule[]>(loadDivisionShiftRules);
+
+  // Komponen gaji yang dapat diset global / per divisi / per karyawan
+  const [payslipComponents, setPayslipComponents] = useState<PayslipComponent[]>(() =>
+    loadStoredArray<PayslipComponent>(LOCAL_PAYSLIP_COMPONENTS_KEY, [])
+  );
+
+  const [payrollSettings, setPayrollSettings] = useState<PayrollSettings>(() =>
+    loadStoredRecord<PayrollSettings>(LOCAL_PAYROLL_SETTINGS_KEY, DEFAULT_PAYROLL_SETTINGS)
+  );
+
+  // Todo list tasks created by Supervisor / HRD
+  const [todos, setTodos] = useState<TodoTask[]>(() => loadStoredArray<TodoTask>(LOCAL_TODOS_KEY, []));
 
   const saveLocalPhoto = useCallback((recordId: string, kind: 'in' | 'out', dataUrl: string) => {
     setLocalPhotos((prev) => {
@@ -268,6 +484,24 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       return next;
     });
   }, []);
+
+  // Terapkan tema ke <html> (kelas .dark) dan simpan agar bertahan setelah refresh.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('dark', theme === 'dark');
+    root.style.colorScheme = theme;
+    try {
+      localStorage.setItem(LOCAL_THEME_KEY, theme);
+    } catch {
+      // Abaikan storage yang tidak tersedia.
+    }
+  }, [theme]);
+
+  const setTheme = useCallback((mode: ThemeMode) => setThemeState(mode), []);
+  const toggleTheme = useCallback(
+    () => setThemeState((prev) => (prev === 'dark' ? 'light' : 'dark')),
+    []
+  );
 
   // Live WIB Clock
   useEffect(() => {
@@ -290,14 +524,13 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const isFirebaseSynced = Boolean(firebaseUser && firebaseUser.emailVerified);
-  const isAdminSession = Boolean(adminSession && adminToken);
   const isBootstrapAdmin = Boolean(
     isFirebaseSynced && firebaseUser?.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()
   );
 
-  // Clear HRIS arrays when neither Firebase Auth nor Admin session is active
+  // Kosongkan data HRIS saat tidak ada sesi Firebase terverifikasi (mis. setelah logout).
   useEffect(() => {
-    if (!isFirebaseSynced && !isAdminSession) {
+    if (!isFirebaseSynced) {
       setEmployees([]);
       setAttendance([]);
       setLeaves([]);
@@ -306,7 +539,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       setExitClearances([]);
       setSchedules([]);
     }
-  }, [isFirebaseSynced, isAdminSession]);
+  }, [isFirebaseSynced]);
 
   // Ensure Firestore employee profile exists on first verified Firebase login
   useEffect(() => {
@@ -319,30 +552,15 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       try {
         const snap = await getDoc(empRef);
         if (!snap.exists()) {
-          let draft: OnboardingDraft | null = null;
-          try {
-            const rawDraft = sessionStorage.getItem(ONBOARDING_DRAFT_KEY);
-            if (rawDraft) {
-              draft = JSON.parse(rawDraft) as OnboardingDraft;
-              sessionStorage.removeItem(ONBOARDING_DRAFT_KEY);
-            }
-          } catch {
-            // ignore
-          }
-
           const nowWib = getWibComponents(new Date());
-          const division: Division = isBootstrapAdmin
-            ? 'HRD'
-            : draft?.division && draft.division !== 'HRD'
-              ? draft.division
-              : 'Operasional';
-          const shiftCode: ShiftCode = draft?.shiftCode ?? 'REGULER';
+          const division: Division = isBootstrapAdmin ? 'HRD' : 'Operasional';
+          const shiftCode: ShiftCode = 'REGULER';
           const email = sanitizeString(firebaseUser.email || 'user@sinarbungamas.co.id', 120);
           const fallbackName = email.split('@')[0]?.replace(/[._-]+/g, ' ') || 'Karyawan SBM';
-          const rawName = draft?.name || firebaseUser.displayName || fallbackName;
+          const rawName = firebaseUser.displayName || fallbackName;
           const name = sanitizeString(rawName.length >= 2 ? rawName : 'Karyawan SBM', 100);
           const position = sanitizeString(
-            isBootstrapAdmin ? 'HR Manager' : draft?.position || `Staff ${division}`,
+            isBootstrapAdmin ? 'HR Manager' : `Staff ${division}`,
             80
           );
           const comp = getDivisionCompensationDefaults(division);
@@ -356,6 +574,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
             position,
             division,
             role: isBootstrapAdmin ? 'hrd' : 'employee',
+            supervisorUid: '',
             shiftCode,
             email,
             phone: '',
@@ -407,6 +626,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     const unsubs: Array<() => void> = [];
 
     if (isBootstrapAdmin) {
+      setSelfRole('hrd');
       unsubs.push(
         onSnapshot(
           collection(db, 'employees'),
@@ -419,51 +639,133 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
         )
       );
     } else {
+      // Supervisor: profil sendiri + profil bawahan langsung (supervisorUid == uid) untuk roster tim.
+      let self: Employee | null = null;
+      const reports = new Map<string, Employee>();
+      const publishEmployees = () => {
+        const list = self ? [self, ...Array.from(reports.values())] : Array.from(reports.values());
+        const byUid = new Map(list.map((e) => [e.uid, e]));
+        const merged = Array.from(byUid.values()).sort((a, b) => a.nik.localeCompare(b.nik));
+        setEmployees(merged);
+      };
       unsubs.push(
         onSnapshot(
           doc(db, 'employees', uid),
           (snap) => {
-            setEmployees(snap.exists() ? [snap.data() as Employee] : []);
+            self = snap.exists() ? (snap.data() as Employee) : null;
+            setSelfRole(self?.role ?? 'employee');
+            publishEmployees();
           },
           (err) => handleFirestoreError(err, OperationType.GET, `employees/${uid}`)
         )
       );
+      if (selfRole === 'supervisor') {
+        unsubs.push(
+          onSnapshot(
+            query(collection(db, 'employees'), where('supervisorUid', '==', uid)),
+            (snap) => {
+              reports.clear();
+              snap.docs.forEach((d) => {
+                const emp = d.data() as Employee;
+                reports.set(emp.uid, emp);
+              });
+              publishEmployees();
+            },
+            (err) => handleFirestoreError(err, OperationType.LIST, 'employees')
+          )
+        );
+      }
     }
+
+    // 'all' = HRD, 'own' = karyawan, 'supervised' = pengajuan sendiri + pengajuan bawahan se-divisi
+    const scope: CollectionScope = isBootstrapAdmin
+      ? 'all'
+      : selfRole === 'supervisor'
+        ? 'supervised'
+        : 'own';
+
+    const mergeById = <T extends { id: string }>(lists: T[][]): T[] => {
+      const byId = new Map<string, T>();
+      for (const list of lists) {
+        for (const item of list) byId.set(item.id, item);
+      }
+      return Array.from(byId.values());
+    };
 
     const bindCollection = <T extends { id: string }>(
       colName: string,
       setter: React.Dispatch<React.SetStateAction<T[]>>,
-      sortFn: (a: T, b: T) => number
+      sortFn: (a: T, b: T) => number,
+      supervised = false
     ) => {
-      const ref = isBootstrapAdmin
-        ? collection(db, colName)
-        : query(collection(db, colName), where('uid', '==', uid));
-      const unsub = onSnapshot(
-        ref,
-        (snap) => {
-          const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as T);
-          items.sort(sortFn);
-          setter(items);
-        },
-        (err) => handleFirestoreError(err, OperationType.LIST, colName)
+      const readAll = (snap: { docs: Array<{ id: string; data: () => unknown }> }) =>
+        snap.docs.map((d) => ({ id: d.id, ...(d.data() as object) }) as T);
+      const emit = (lists: T[][]) => {
+        const items = mergeById(lists);
+        items.sort(sortFn);
+        setter(items);
+      };
+      const onError = (err: unknown) => handleFirestoreError(err, OperationType.LIST, colName);
+
+      if (scope === 'all') {
+        unsubs.push(onSnapshot(collection(db, colName), (snap) => emit([readAll(snap)]), onError));
+        return;
+      }
+
+      if (scope === 'own' || !supervised) {
+        unsubs.push(
+          onSnapshot(query(collection(db, colName), where('uid', '==', uid)), (snap) => emit([readAll(snap)]), onError)
+        );
+        return;
+      }
+
+      // Supervisor: gabungkan pengajuan sendiri + pengajuan yang dirutekan kepada dirinya.
+      const parts = new Map<string, T[]>();
+      const track = (key: string) => (snap: { docs: Array<{ id: string; data: () => unknown }> }) => {
+        parts.set(key, readAll(snap));
+        emit(Array.from(parts.values()));
+      };
+      unsubs.push(
+        onSnapshot(query(collection(db, colName), where('uid', '==', uid)), track('own'), onError)
       );
-      unsubs.push(unsub);
+      unsubs.push(
+        onSnapshot(
+          query(collection(db, colName), where('supervisorUid', '==', uid)),
+          track('supervised'),
+          onError
+        )
+      );
     };
 
-    bindCollection<AttendanceRecord>('attendance', setAttendance, (a, b) =>
-      `${b.date} ${b.clockInTime}`.localeCompare(`${a.date} ${a.clockInTime}`)
+    bindCollection<AttendanceRecord>(
+      'attendance',
+      setAttendance,
+      (a, b) => `${b.date} ${b.clockInTime}`.localeCompare(`${a.date} ${a.clockInTime}`),
+      true
     );
-    bindCollection<LeaveRequest>('leaves', setLeaves, (a, b) =>
-      b.createdLabel.localeCompare(a.createdLabel)
+    bindCollection<LeaveRequest>(
+      'leaves',
+      setLeaves,
+      (a, b) => b.createdLabel.localeCompare(a.createdLabel),
+      true
     );
-    bindCollection<OvertimeRequest>('overtimes', setOvertimes, (a, b) =>
-      b.createdLabel.localeCompare(a.createdLabel)
+    bindCollection<OvertimeRequest>(
+      'overtimes',
+      setOvertimes,
+      (a, b) => b.createdLabel.localeCompare(a.createdLabel),
+      true
     );
-    bindCollection<ShiftSwapRequest>('shiftSwaps', setShiftSwaps, (a, b) =>
-      b.createdLabel.localeCompare(a.createdLabel)
+    bindCollection<ShiftSwapRequest>(
+      'shiftSwaps',
+      setShiftSwaps,
+      (a, b) => b.createdLabel.localeCompare(a.createdLabel),
+      true
     );
-    bindCollection<ExitClearanceRequest>('exitClearances', setExitClearances, (a, b) =>
-      b.createdLabel.localeCompare(a.createdLabel)
+    bindCollection<ExitClearanceRequest>(
+      'exitClearances',
+      setExitClearances,
+      (a, b) => b.createdLabel.localeCompare(a.createdLabel),
+      true
     );
     bindCollection<ScheduleEntry>('schedules', setSchedules, (a, b) =>
       b.date.localeCompare(a.date)
@@ -472,25 +774,24 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [authReady, firebaseUser, profileReady, isBootstrapAdmin]);
+  }, [authReady, firebaseUser, profileReady, isBootstrapAdmin, selfRole]);
 
   const currentUser = useMemo(() => {
-    if (isFirebaseSynced && firebaseUser) {
-      return employees.find((e) => e.uid === firebaseUser.uid) ?? null;
-    }
-    if (isAdminSession && adminSession) {
-      return (
-        employees.find((e) => e.uid === 'admin_console') ?? createAdminConsoleProfile(adminSession)
-      );
-    }
-    return null;
-  }, [employees, firebaseUser, isFirebaseSynced, isAdminSession, adminSession]);
+    if (!isFirebaseSynced || !firebaseUser) return null;
+    return employees.find((e) => e.uid === firebaseUser.uid) ?? null;
+  }, [employees, firebaseUser, isFirebaseSynced]);
+
+  const canReview: HrisContextValue['canReview'] = (ownerUid, routedSupervisorUid) => {
+    if (!currentUser || ownerUid === currentUser.uid) return false;
+    if (currentUser.role === 'hrd') return true;
+    return currentUser.role === 'supervisor' && routedSupervisorUid === currentUser.uid;
+  };
 
   // Auth actions
   const loginWithEmail: HrisContextValue['loginWithEmail'] = async (email, password) => {
-    const cleanEmail = email.trim();
-    if (!isValidEmailAddress(cleanEmail)) {
-      return { ok: false, error: 'Masukkan alamat email yang valid.' };
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      return { ok: false, error: 'Masukkan email atau username Anda.' };
     }
     if (!password) {
       return { ok: false, error: 'Kata sandi wajib diisi.' };
@@ -503,93 +804,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const loginAsAdmin: HrisContextValue['loginAsAdmin'] = async (username, password) => {
-    const cleanUser = username.trim();
-    if (!cleanUser || !password) {
-      return { ok: false, error: 'Username dan kata sandi admin wajib diisi.' };
-    }
-    try {
-      const response = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: cleanUser, password }),
-      });
-      const data = (await response.json()) as {
-        ok?: boolean;
-        token?: string;
-        admin?: AdminSessionInfo;
-        error?: string;
-      };
-      if (!response.ok || !data.ok || !data.token || !data.admin) {
-        return {
-          ok: false,
-          error: data.error || 'Username atau kata sandi admin tidak sesuai.',
-        };
-      }
-      setAdminToken(data.token);
-      setAdminSession(data.admin);
-      if (!isFirebaseSynced) {
-        const adminProfile = createAdminConsoleProfile(data.admin);
-        setEmployees((prev) =>
-          prev.some((e) => e.uid === 'admin_console') ? prev : [adminProfile, ...prev]
-        );
-        const nowWib = getWibComponents(new Date());
-        setSchedules((prev) =>
-          prev.length > 0
-            ? prev
-            : [
-                {
-                  id: `sch_admin_${nowWib.isoDate.replace(/-/g, '')}`,
-                  uid: adminProfile.uid,
-                  nik: adminProfile.nik,
-                  date: nowWib.isoDate,
-                  shiftCode: 'REGULER',
-                  location: 'Kantor Pusat PT Sinar Bunga Mas',
-                  notes: 'Monitoring operasional & persetujuan HRD harian',
-                  patrolCompleted: false,
-                },
-              ]
-        );
-      }
-      return { ok: true };
-    } catch {
-      return {
-        ok: false,
-        error: 'Tidak dapat terhubung ke server autentikasi admin. Coba beberapa saat lagi.',
-      };
-    }
-  };
+  // Sesi login dipulihkan otomatis oleh Firebase Auth (onAuthStateChanged).
 
-  const registerWithEmail: HrisContextValue['registerWithEmail'] = async (input) => {
-    const cleanEmail = sanitizeString(input.email, 120);
-    const cleanName = sanitizeString(input.name, 100);
-    if (!isValidEmailAddress(cleanEmail)) {
-      return { ok: false, error: 'Masukkan alamat email aktif yang valid.' };
-    }
-    if (cleanName.length < 2) {
-      return { ok: false, error: 'Nama lengkap minimal 2 karakter.' };
-    }
-    if (input.password.length < 6) {
-      return { ok: false, error: 'Kata sandi minimal 6 karakter.' };
-    }
-
-    try {
-      const draft: OnboardingDraft = {
-        name: cleanName,
-        division: input.division,
-        shiftCode: input.shiftCode,
-        position: sanitizeString(input.position || `Staff ${input.division}`, 80),
-      };
-      sessionStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft));
-
-      const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
-      await updateProfile(cred.user, { displayName: cleanName });
-      await sendEmailVerification(cred.user);
-      return { ok: true, needsVerification: !cred.user.emailVerified };
-    } catch (err) {
-      return { ok: false, error: mapFirebaseAuthError(err) };
-    }
-  };
+  
 
   const loginWithGoogle: HrisContextValue['loginWithGoogle'] = async () => {
     try {
@@ -649,49 +866,31 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const changeAdminPassword: HrisContextValue['changeAdminPassword'] = async (
-    currentPassword,
-    newPassword
-  ) => {
-    if (!adminToken) {
-      return { ok: false, error: 'Sesi login admin tidak aktif.' };
+  
+
+  const resetUserPassword: HrisContextValue['resetUserPassword'] = async (uid) => {
+    if (!currentUser || currentUser.role !== 'hrd') {
+      return { ok: false, error: 'Hanya Admin HRD yang dapat mereset kata sandi karyawan.' };
     }
-    if (newPassword.length < 6) {
-      return { ok: false, error: 'Kata sandi admin baru minimal 6 karakter.' };
+    const emp = employees.find((e) => e.uid === uid);
+    if (!emp) {
+      return { ok: false, error: 'Karyawan tidak ditemukan pada direktori.' };
     }
+    const username = emp.email.split('@')[0].trim().toLowerCase();
+    if (!emp.email.includes('@')) {
+      return { ok: false, error: `Email karyawan ${emp.name} tidak valid untuk mereset akun.` };
+    }
+
+    // Mengubah sandi user lain butuh Admin SDK: kirim tautan reset ke email karyawan.
     try {
-      const response = await fetch('/api/admin/change-password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${adminToken}`,
-        },
-        body: JSON.stringify({ currentPassword, newPassword }),
-      });
-      const data = (await response.json()) as { ok?: boolean; token?: string; error?: string };
-      if (!response.ok || !data.ok || !data.token) {
-        return { ok: false, error: data.error || 'Gagal memperbarui kata sandi admin.' };
-      }
-      setAdminToken(data.token);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: 'Gagal menghubungi server untuk memperbarui kata sandi admin.' };
+      await sendPasswordResetEmail(auth, emp.email);
+      return { ok: true, username };
+    } catch (err) {
+      return { ok: false, error: mapFirebaseAuthError(err) };
     }
   };
 
   const logout = async () => {
-    if (adminToken) {
-      try {
-        await fetch('/api/admin/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${adminToken}` },
-        });
-      } catch {
-        // Ignore network error during logout cleanup
-      }
-      setAdminToken(null);
-      setAdminSession(null);
-    }
     if (auth.currentUser) {
       await signOut(auth);
     }
@@ -708,8 +907,53 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: `Email ${cleanEmail} sudah terdaftar di direktori karyawan.` };
     }
 
+    const role: UserRole = input.role ?? (input.division === 'HRD' ? 'hrd' : 'employee');
+    if (role === 'hrd' && input.division !== 'HRD') {
+      return { ok: false, error: 'Role HRD hanya berlaku untuk divisi HRD.' };
+    }
+    // Hanya karyawan (employee) yang memiliki atasan langsung supervisor di divisi yang sama.
+    const supervisorUid = role === 'employee' ? (input.supervisorUid ?? '') : '';
+    if (supervisorUid) {
+      const supervisor = employees.find((e) => e.uid === supervisorUid);
+      if (!supervisor || supervisor.role !== 'supervisor' || supervisor.division !== input.division) {
+        return { ok: false, error: 'Atasan langsung harus supervisor aktif di divisi yang sama.' };
+      }
+    }
+    if (!divisions.includes(input.division)) {
+      return {
+        ok: false,
+        error: `Divisi ${input.division} belum terdaftar. Tambahkan divisi terlebih dahulu.`,
+      };
+    }
+    const shiftCode = input.shiftCode ?? defaultShiftForDivision(input.division, divisionShiftRules);
+    if (!isShiftAllowedForDivision(input.division, shiftCode, divisionShiftRules)) {
+      const rule = resolveDivisionShiftRule(input.division, divisionShiftRules);
+      const allowedLabels = rule.allowedShiftCodes
+        .map((code) => shiftTemplateForDivision(code, input.division, divisionShiftRules).label ?? code)
+        .join(' | ');
+      return {
+        ok: false,
+        error: `Shift untuk divisi ${input.division} harus salah satu dari: ${allowedLabels}.`,
+      };
+    }
+
     const nowWib = getWibComponents(new Date());
-    const empUid = `emp_${Date.now()}`;
+    const initialPassword = input.initialPassword ?? '';
+    if (initialPassword.length < 6) {
+      return {
+        ok: false,
+        error: 'Kata sandi awal minimal 6 karakter untuk membuat akun login karyawan.',
+      };
+    }
+    let empUid = `emp_${Date.now()}`;
+
+    // Akun login dibuat lebih dulu agar uid Auth = id dokumen employees/{uid}.
+    try {
+      empUid = await provisionEmployeeAccount(cleanEmail, initialPassword, cleanName);
+    } catch (err) {
+      return { ok: false, error: mapFirebaseAuthError(err) };
+    }
+
     const nik = generateEmployeeNik(input.division, empUid);
     const comp = getDivisionCompensationDefaults(input.division);
     const contractEnd = `${nowWib.year + 1}-${String(nowWib.month + 1).padStart(2, '0')}-${String(nowWib.day).padStart(2, '0')}`;
@@ -720,8 +964,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       name: cleanName,
       position: sanitizeString(input.position || `Staff ${input.division}`, 80),
       division: input.division,
-      role: input.division === 'HRD' ? 'hrd' : 'employee',
-      shiftCode: input.shiftCode,
+      role,
+      supervisorUid,
+      shiftCode,
       email: cleanEmail,
       phone: '',
       address: 'Jakarta',
@@ -738,7 +983,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     };
 
     const newSchedule: ScheduleEntry = {
-      id: `sch_${empUid}`,
+      id: `sch_${empUid}_${nowWib.isoDate.replace(/-/g, '')}`,
       uid: empUid,
       nik,
       date: nowWib.isoDate,
@@ -785,7 +1030,35 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     if (updates.shiftCode !== undefined) cleanUpdates.shiftCode = updates.shiftCode;
     if (updates.division !== undefined) cleanUpdates.division = updates.division;
     if (updates.position !== undefined) cleanUpdates.position = sanitizeString(updates.position, 80);
+    if (updates.role !== undefined) cleanUpdates.role = updates.role;
+    if (updates.supervisorUid !== undefined) cleanUpdates.supervisorUid = updates.supervisorUid;
     if (updates.active !== undefined) cleanUpdates.active = updates.active;
+    if (updates.photoUrl !== undefined) {
+      // Hanya terima data URL gambar (hasil crop kanvas); tolak skema lain demi keamanan.
+      const value = updates.photoUrl;
+      cleanUpdates.photoUrl =
+        value.startsWith('data:image/') && value.length <= 400000 ? value : '';
+    }
+
+    // Shift harus sesuai divisi: bila divisi berubah (atau shift tak diizinkan), pakai shift bawaan divisi.
+    const target = employees.find((e) => e.uid === uid);
+    // Atasan langsung wajib di divisi yang sama: jika divisi pindah atau peran bukan karyawan, bersihkan supervisorUid.
+    if (updates.division && updates.division !== target?.division && cleanUpdates.supervisorUid === undefined) {
+      cleanUpdates.supervisorUid = '';
+    }
+    if (cleanUpdates.role && cleanUpdates.role !== 'employee') {
+      cleanUpdates.supervisorUid = '';
+    }
+    const nextDivision = updates.division ?? target?.division;
+    const nextShift = updates.shiftCode ?? target?.shiftCode;
+    if (
+      target &&
+      nextDivision &&
+      nextShift &&
+      !isShiftAllowedForDivision(nextDivision, nextShift, divisionShiftRules)
+    ) {
+      cleanUpdates.shiftCode = defaultShiftForDivision(nextDivision, divisionShiftRules);
+    }
 
     if (!isFirebaseSynced) {
       setEmployees((prev) => prev.map((e) => (e.uid === uid ? { ...e, ...cleanUpdates } : e)));
@@ -829,6 +1102,14 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
   const recordClockIn: HrisContextValue['recordClockIn'] = async (payload) => {
     if (!currentUser) return { ok: false, error: 'Anda belum login.' };
     const nowWib = getWibComponents(new Date());
+    // Izin/cuti disetujui otomatis memblokir absensi pada tanggal tersebut.
+    const activeLeave = findApprovedLeaveOnDate(leaves, currentUser.uid, nowWib.isoDate);
+    if (activeLeave) {
+      return {
+        ok: false,
+        error: `Anda tercatat ${activeLeave.type} disetujui (${activeLeave.startDate} s/d ${activeLeave.endDate}), sehingga tidak dapat melakukan absensi.`,
+      };
+    }
     const existingToday = attendance.find(
       (a) => a.uid === currentUser.uid && a.date === nowWib.isoDate
     );
@@ -836,7 +1117,19 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: 'Anda sudah melakukan Absen Masuk hari ini.' };
     }
 
-    const lateMinutes = calculateLateMinutes(nowWib.timeFull, currentUser.shiftCode);
+    // Shift absensi mengikuti jadwal hari ini (hasil penugasan/tukar shift), bukan hanya profil.
+    const todayShift = effectiveShiftForDate(
+      currentUser.uid,
+      nowWib.isoDate,
+      schedules,
+      currentUser.shiftCode
+    );
+    const todayRule = resolveDivisionShiftRule(currentUser.division, divisionShiftRules);
+    const gate = validateClockIn(nowWib.timeFull, todayShift, todayRule);
+    if (!gate.ok) {
+      return { ok: false, error: gate.error };
+    }
+    const lateMinutes = calculateLateMinutes(nowWib.timeFull, todayShift, todayRule);
     const id = `att_${currentUser.uid.slice(0, 12)}_${nowWib.isoDate.replace(/-/g, '')}`;
     const record: AttendanceRecord = {
       id,
@@ -845,7 +1138,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       employeeName: sanitizeString(currentUser.name, 100),
       division: currentUser.division,
       date: nowWib.isoDate,
-      shiftCode: currentUser.shiftCode,
+      shiftCode: todayShift,
       clockInTime: nowWib.timeFull,
       clockInPhotoVerified: true,
       clockInLat: Number(payload.lat.toFixed(6)),
@@ -860,6 +1153,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       clockOutAddress: '',
       workMinutes: 0,
       status: lateMinutes > 0 ? 'Terlambat' : 'Tepat Waktu',
+      supervisorUid: currentUser.supervisorUid ?? '',
+      clockInPhotoUrl: '',
+      adminValidationStatus: 'Menunggu',
     };
 
     if (!isFirebaseSynced) {
@@ -868,7 +1164,20 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       return { ok: true, record };
     }
 
-    const { id: _docId, ...firestoreBody } = record;
+    // Foto diunggah ke Cloud Storage lebih dulu agar URL-nya tersimpan di dokumen absensi.
+    const photoInUrl = payload.photoDataUrl
+      ? await uploadPhotoOrEmpty(currentUser.uid, record.date, 'in', payload.photoDataUrl)
+      : '';
+
+    const {
+      id: _docId,
+      clockOutPhotoUrl: _photoOut,
+      adminValidationStatus: _avStatus,
+      adminValidationNotes: _avNotes,
+      validatedBy: _valBy,
+      validatedAt: _valAt,
+      ...firestoreBody
+    } = { ...record, clockInPhotoUrl: photoInUrl };
     const path = `attendance/${id}`;
     try {
       await setDoc(doc(db, 'attendance', id), {
@@ -879,7 +1188,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       if (payload.photoDataUrl) {
         saveLocalPhoto(id, 'in', payload.photoDataUrl);
       }
-      return { ok: true, record };
+      return { ok: true, record: { ...record, clockInPhotoUrl: photoInUrl } };
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, path);
     }
@@ -897,8 +1206,17 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     if (existingToday.clockOutTime) {
       return { ok: false, error: 'Anda sudah melakukan Absen Pulang hari ini.' };
     }
+    const outRule = resolveDivisionShiftRule(existingToday.division, divisionShiftRules);
+    const outGate = validateClockOut(nowWib.timeFull, existingToday.shiftCode, outRule);
+    if (!outGate.ok) {
+      return { ok: false, error: outGate.error };
+    }
 
-    const workMinutes = calculateWorkMinutes(existingToday.clockInTime, nowWib.timeFull);
+    const workMinutes = calculateWorkMinutes(
+      existingToday.clockInTime,
+      nowWib.timeFull,
+      existingToday.shiftCode
+    );
     const status = existingToday.lateMinutes > 0 ? 'Terlambat' : 'Selesai';
     const updatedRecord: AttendanceRecord = {
       ...existingToday,
@@ -909,6 +1227,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       clockOutAddress: sanitizeString(payload.address, 200),
       workMinutes,
       status,
+      clockOutPhotoUrl: existingToday.clockOutPhotoUrl || '',
     };
 
     if (!isFirebaseSynced) {
@@ -918,6 +1237,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
 
     const path = `attendance/${existingToday.id}`;
+    const photoOutUrl = payload.photoDataUrl
+      ? await uploadPhotoOrEmpty(currentUser.uid, existingToday.date, 'out', payload.photoDataUrl)
+      : existingToday.clockOutPhotoUrl ?? '';
     try {
       await updateDoc(doc(db, 'attendance', existingToday.id), {
         clockOutTime: updatedRecord.clockOutTime,
@@ -925,6 +1247,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
         clockOutLat: updatedRecord.clockOutLat,
         clockOutLng: updatedRecord.clockOutLng,
         clockOutAddress: updatedRecord.clockOutAddress,
+        clockOutPhotoUrl: photoOutUrl,
         workMinutes,
         status,
         updatedAt: serverTimestamp(),
@@ -932,7 +1255,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       if (payload.photoDataUrl) {
         saveLocalPhoto(existingToday.id, 'out', payload.photoDataUrl);
       }
-      return { ok: true, record: updatedRecord };
+      return { ok: true, record: { ...updatedRecord, clockOutPhotoUrl: photoOutUrl } };
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, path);
     }
@@ -948,6 +1271,20 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     if (reason.length < 3) {
       return { ok: false, error: 'Alasan izin / cuti minimal 3 karakter.' };
     }
+
+    // Validasi kuota izin/cuti (default 12 hari per tahun)
+    const quota = currentUser.leaveQuota ?? 12;
+    const usedDays = leaves
+      .filter((l) => l.uid === currentUser.uid && l.type === input.type && l.status !== 'Ditolak')
+      .reduce((sum, l) => sum + l.days, 0);
+    if (input.type === 'Cuti Tahunan' && usedDays + days > quota) {
+      const sisa = Math.max(0, quota - usedDays);
+      return {
+        ok: false,
+        error: `Kuota izin/cuti tahunan tidak mencukupi (Tersisa: ${sisa} hari dari kuota ${quota} hari).`,
+      };
+    }
+
     const nowWib = getWibComponents(new Date());
     const id = `lv_${Date.now()}`;
     const item: LeaveRequest = {
@@ -956,6 +1293,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       nik: currentUser.nik,
       employeeName: sanitizeString(currentUser.name, 100),
       division: currentUser.division,
+      supervisorUid: currentUser.supervisorUid ?? '',
       type: input.type,
       startDate: input.startDate,
       endDate: input.endDate,
@@ -964,6 +1302,8 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       status: 'Menunggu',
       createdLabel: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
       reviewedBy: '',
+      supervisorStatus: 'Menunggu',
+      hrdStatus: 'Menunggu',
     };
 
     if (!isFirebaseSynced) {
@@ -973,7 +1313,16 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
 
     const path = `leaves/${id}`;
     try {
-      const { id: _id, ...body } = item;
+      const {
+        id: _id,
+        supervisorStatus: _supStatus,
+        supervisorReviewedBy: _supBy,
+        supervisorReviewedAt: _supAt,
+        hrdStatus: _hrdStatus,
+        hrdReviewedBy: _hrdBy,
+        hrdReviewedAt: _hrdAt,
+        ...body
+      } = item;
       await setDoc(doc(db, 'leaves', id), {
         ...body,
         createdAt: serverTimestamp(),
@@ -996,8 +1345,11 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       input.endTime,
       currentUser.baseSalary
     );
-    if (hours <= 0) {
-      return { ok: false, error: 'Durasi lembur harus lebih dari 0 jam.' };
+    if (hours < 0.5 || hours > 12) {
+      return {
+        ok: false,
+        error: 'Durasi lembur minimal 0,5 jam (30 menit) dan maksimal 12 jam per pengajuan.',
+      };
     }
     const nowWib = getWibComponents(new Date());
     const id = `ot_${Date.now()}`;
@@ -1007,10 +1359,11 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       nik: currentUser.nik,
       employeeName: sanitizeString(currentUser.name, 100),
       division: currentUser.division,
+      supervisorUid: currentUser.supervisorUid ?? '',
       date: input.date,
       startTime: sanitizeString(input.startTime, 8),
       endTime: sanitizeString(input.endTime, 8),
-      hours: Math.min(24, hours),
+      hours,
       estimatedPay,
       reason,
       status: 'Menunggu',
@@ -1043,8 +1396,32 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     if (!input.date || reason.length < 3) {
       return { ok: false, error: 'Tanggal dan alasan tukar shift wajib diisi (min. 3 karakter).' };
     }
-    if (input.toShift === currentUser.shiftCode) {
+    // Shift asal = shift efektif pada tanggal tersebut (jadwal/tukar shift sebelumnya), bukan hanya profil.
+    const fromShift = effectiveShiftForDate(
+      currentUser.uid,
+      input.date,
+      schedules,
+      currentUser.shiftCode
+    );
+    if (input.toShift === fromShift) {
       return { ok: false, error: 'Pilih shift tujuan yang berbeda dari shift Anda saat ini.' };
+    }
+    // Tukar shift tidak boleh bertabrakan dengan shift terjadwal / shift hasil tukar yang belum ditolak.
+    const swapCheck = validateShiftSwap({
+      uid: currentUser.uid,
+      division: currentUser.division,
+      date: input.date,
+      fromShift,
+      toShift: input.toShift,
+      schedules,
+      shiftSwaps,
+      rules: divisionShiftRules,
+      onApprovedLeave: Boolean(
+        findApprovedLeaveOnDate(leaves, currentUser.uid, input.date)
+      ),
+    });
+    if (!swapCheck.ok) {
+      return { ok: false, error: swapCheck.error ?? 'Tukar shift tidak dapat diajukan.' };
     }
     const nowWib = getWibComponents(new Date());
     const id = `sw_${Date.now()}`;
@@ -1054,8 +1431,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       nik: currentUser.nik,
       employeeName: sanitizeString(currentUser.name, 100),
       division: currentUser.division,
+      supervisorUid: currentUser.supervisorUid ?? '',
       date: input.date,
-      fromShift: currentUser.shiftCode,
+      fromShift,
       toShift: input.toShift,
       reason,
       status: 'Menunggu',
@@ -1097,6 +1475,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       employeeName: sanitizeString(currentUser.name, 100),
       position: sanitizeString(currentUser.position, 80),
       division: currentUser.division,
+      supervisorUid: currentUser.supervisorUid ?? '',
       lastWorkingDate: input.lastWorkingDate,
       reason,
       checklist: [
@@ -1182,11 +1561,55 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
 
   const reviewLeave = async (id: string, status: ApprovalStatus) => {
     const target = leaves.find((l) => l.id === id);
-    const reviewer = sanitizeString(currentUser?.name ?? 'HRD', 100);
+    if (!target || !canReview(target.uid, target.supervisorUid)) return;
+    const nowWib = getWibComponents(new Date());
+    const isSup = currentUser?.role === 'supervisor';
+    const isHrd = currentUser?.role === 'hrd';
+
+    let supervisorStatus = target.supervisorStatus;
+    let supervisorReviewedBy = target.supervisorReviewedBy;
+    let supervisorReviewedAt = target.supervisorReviewedAt;
+    let hrdStatus = target.hrdStatus;
+    let hrdReviewedBy = target.hrdReviewedBy;
+    let hrdReviewedAt = target.hrdReviewedAt;
+    let overallStatus: ApprovalStatus = target.status;
+
+    if (isSup) {
+      supervisorStatus = status;
+      supervisorReviewedBy = currentUser?.name;
+      supervisorReviewedAt = `${nowWib.isoDate} ${nowWib.timeShort} WIB`;
+      if (status === 'Ditolak') {
+        overallStatus = 'Ditolak';
+      } else {
+        // Jika disetujui supervisor, status tetap Menunggu sampai ACC HRD (atau jika tanpa atasan)
+        overallStatus = 'Menunggu';
+      }
+    } else if (isHrd) {
+      hrdStatus = status;
+      hrdReviewedBy = currentUser?.name;
+      hrdReviewedAt = `${nowWib.isoDate} ${nowWib.timeShort} WIB`;
+      overallStatus = status;
+    }
+
+    const reviewer = sanitizeString(
+      `${currentUser?.name ?? 'Reviewer'} (${isHrd ? 'HRD Admin' : 'Supervisor'})`,
+      100
+    );
+
+    const updatedItem: Partial<LeaveRequest> = {
+      status: overallStatus,
+      reviewedBy: reviewer,
+      supervisorStatus,
+      supervisorReviewedBy,
+      supervisorReviewedAt,
+      hrdStatus,
+      hrdReviewedBy,
+      hrdReviewedAt,
+    };
 
     if (!isFirebaseSynced) {
-      setLeaves((prev) => prev.map((l) => (l.id === id ? { ...l, status, reviewedBy: reviewer } : l)));
-      if (target && target.status !== 'Disetujui' && status === 'Disetujui' && target.type === 'Cuti Tahunan') {
+      setLeaves((prev) => prev.map((l) => (l.id === id ? { ...l, ...updatedItem } : l)));
+      if (target && target.status !== 'Disetujui' && overallStatus === 'Disetujui' && target.type === 'Cuti Tahunan') {
         setEmployees((prev) =>
           prev.map((e) =>
             e.uid === target.uid ? { ...e, leaveQuota: Math.max(0, e.leaveQuota - target.days) } : e
@@ -1199,11 +1622,11 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     const path = `leaves/${id}`;
     try {
       await updateDoc(doc(db, 'leaves', id), {
-        status,
+        status: overallStatus,
         reviewedBy: reviewer,
         updatedAt: serverTimestamp(),
       });
-      if (target && target.status !== 'Disetujui' && status === 'Disetujui' && target.type === 'Cuti Tahunan') {
+      if (target && target.status !== 'Disetujui' && overallStatus === 'Disetujui' && target.type === 'Cuti Tahunan') {
         const emp = employees.find((e) => e.uid === target.uid);
         if (emp) {
           await updateDoc(doc(db, 'employees', emp.uid), {
@@ -1218,6 +1641,8 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
   };
 
   const reviewOvertime = async (id: string, status: ApprovalStatus) => {
+    const target = overtimes.find((o) => o.id === id);
+    if (!target || !canReview(target.uid, target.supervisorUid)) return;
     const reviewer = sanitizeString(currentUser?.name ?? 'HRD', 100);
 
     if (!isFirebaseSynced) {
@@ -1239,20 +1664,76 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const reviewShiftSwap = async (id: string, status: ApprovalStatus) => {
+  const reviewShiftSwap = async (
+    id: string,
+    status: ApprovalStatus
+  ): Promise<{ ok: boolean; error?: string }> => {
     const target = shiftSwaps.find((s) => s.id === id);
+    if (!target) return { ok: false, error: 'Pengajuan tukar shift tidak ditemukan.' };
+    if (!canReview(target.uid, target.supervisorUid)) {
+      return { ok: false, error: 'Anda tidak berhak memutuskan pengajuan ini.' };
+    }
     const reviewer = sanitizeString(currentUser?.name ?? 'HRD', 100);
+
+    // Tukar shift hanya berlaku pada tanggal pengajuan: shift profil karyawan tidak diubah.
+    const scheduleId = `sch_${target.uid}_${target.date.replace(/-/g, '')}`;
+    const employee = employees.find((e) => e.uid === target.uid);
+
+    if (status === 'Disetujui') {
+      if (!employee) {
+        return { ok: false, error: 'Karyawan pengaju sudah tidak terdaftar.' };
+      }
+      const conflict = findScheduleConflict({
+        uid: target.uid,
+        date: target.date,
+        shiftCode: target.toShift,
+        schedules,
+        ignoreId: scheduleId,
+      });
+      if (conflict) {
+        return {
+          ok: false,
+          error: `Tukar shift bentrok dengan jadwal ${conflict.shiftCode} pada ${conflict.date}.`,
+        };
+      }
+    }
+
+    const applyApprovedSwap = async () => {
+      if (status !== 'Disetujui' || !employee) return;
+      const existingEntry = schedules.find((s) => s.id === scheduleId);
+      const entry: ScheduleEntry = {
+        id: scheduleId,
+        uid: target.uid,
+        nik: target.nik,
+        date: target.date,
+        shiftCode: target.toShift,
+        location: existingEntry?.location ?? 'Kantor PT Sinar Bunga Mas',
+        notes: `Tukar shift ${target.fromShift} → ${target.toShift} (disetujui ${reviewer})`,
+        patrolCompleted: false,
+      };
+      if (!isFirebaseSynced) {
+        setSchedules((prev) => [entry, ...prev.filter((s) => s.id !== scheduleId)]);
+        return;
+      }
+      await setDoc(doc(db, 'schedules', scheduleId), {
+        uid: entry.uid,
+        nik: entry.nik,
+        date: entry.date,
+        shiftCode: entry.shiftCode,
+        location: entry.location,
+        notes: entry.notes,
+        patrolCompleted: entry.patrolCompleted,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    };
 
     if (!isFirebaseSynced) {
       setShiftSwaps((prev) =>
         prev.map((s) => (s.id === id ? { ...s, status, reviewedBy: reviewer } : s))
       );
-      if (target && status === 'Disetujui') {
-        setEmployees((prev) =>
-          prev.map((e) => (e.uid === target.uid ? { ...e, shiftCode: target.toShift } : e))
-        );
-      }
-      return;
+      await applyApprovedSwap();
+      return { ok: true };
     }
 
     const path = `shiftSwaps/${id}`;
@@ -1262,20 +1743,17 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
         reviewedBy: reviewer,
         updatedAt: serverTimestamp(),
       });
-      if (target && status === 'Disetujui') {
-        await updateDoc(doc(db, 'employees', target.uid), {
-          shiftCode: target.toShift,
-          updatedAt: serverTimestamp(),
-        });
-      }
+      await applyApprovedSwap();
+      return { ok: true };
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, path);
+      return { ok: false, error: 'Gagal menyimpan keputusan tukar shift.' };
     }
   };
 
   const reviewExitClearance = async (id: string, status: ApprovalStatus) => {
     const target = exitClearances.find((e) => e.id === id);
-    if (!target) return;
+    if (!target || !canReview(target.uid, target.supervisorUid)) return;
     const reviewer = sanitizeString(currentUser?.name ?? 'HRD', 100);
     const nextChecklist =
       status === 'Disetujui'
@@ -1304,13 +1782,555 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // Validasi Absensi oleh HRD/Admin (Foto & GPS)
+  const validateAttendance: HrisContextValue['validateAttendance'] = async (recordId, status, notes) => {
+    if (!currentUser || currentUser.role !== 'hrd') return;
+    const nowWib = getWibComponents(new Date());
+    setAttendance((prev) =>
+      prev.map((a) =>
+        a.id === recordId
+          ? {
+              ...a,
+              adminValidationStatus: status,
+              adminValidationNotes: notes ?? '',
+              validatedBy: currentUser.name,
+              validatedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+            }
+          : a
+      )
+    );
+    if (isFirebaseSynced) {
+      try {
+        await updateDoc(doc(db, 'attendance', recordId), {
+          adminValidationStatus: status,
+          adminValidationNotes: notes ?? '',
+          validatedBy: currentUser.name,
+          validatedAt: serverTimestamp(),
+        });
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // Pengaturan Kuota Izin / Cuti oleh HRD
+  const updateLeaveQuota: HrisContextValue['updateLeaveQuota'] = async (uid, newQuota) => {
+    if (!currentUser || currentUser.role !== 'hrd') return;
+    const cleanQuota = Math.max(0, Math.floor(newQuota));
+    setEmployees((prev) =>
+      prev.map((e) => (e.uid === uid ? { ...e, leaveQuota: cleanQuota } : e))
+    );
+    if (isFirebaseSynced) {
+      try {
+        await updateDoc(doc(db, 'employees', uid), {
+          leaveQuota: cleanQuota,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // Menonaktifkan / Mengaktifkan Karyawan oleh HRD
+  const toggleEmployeeActive: HrisContextValue['toggleEmployeeActive'] = async (uid, active) => {
+    if (!currentUser || currentUser.role !== 'hrd') return;
+    setEmployees((prev) =>
+      prev.map((e) => (e.uid === uid ? { ...e, active } : e))
+    );
+    const emp = employees.find((e) => e.uid === uid);
+    if (emp) {
+      try {
+        await updateDoc(doc(db, 'employees', uid), {
+          active,
+          updatedAt: serverTimestamp(),
+        });
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  // Tambah Divisi Baru oleh HRD
+  const addDivision: HrisContextValue['addDivision'] = async (name) => {
+    const clean = name.trim();
+    if (clean.length < 2) {
+      return { ok: false, error: 'Nama divisi minimal 2 karakter.' };
+    }
+    if (divisions.some((d) => d.toLowerCase() === clean.toLowerCase())) {
+      return { ok: false, error: 'Divisi dengan nama tersebut sudah ada.' };
+    }
+    const next = [...divisions, clean];
+    setDivisions(next);
+    saveStoredJson(LOCAL_DIVISIONS_KEY, next);
+    // Divisi baru langsung punya aturan jam kerja (shift) sehingga bisa dipakai saat menambah karyawan.
+    setDivisionShiftRules((prev) => {
+      const nextRules = prev.some((rule) => rule.division === clean)
+        ? prev
+        : [...prev, resolveDivisionShiftRule(clean, prev)];
+      saveStoredJson(LOCAL_DIVISION_SHIFT_RULES_KEY, nextRules);
+      return nextRules;
+    });
+    return { ok: true };
+  };
+
+  /** Aturan jam kerja per divisi: mis. Security 24 jam, Cleaning Service hanya sampai sore. */
+  const updateDivisionShiftRule: HrisContextValue['updateDivisionShiftRule'] = async (
+    division,
+    patch
+  ) => {
+    const allowed = patch.allowedShiftCodes.filter((code) => Boolean(SHIFT_TEMPLATES[code]));
+    if (allowed.length === 0) {
+      return { ok: false, error: 'Pilih minimal satu shift untuk divisi ini.' };
+    }
+    if (!allowed.includes(patch.defaultShiftCode)) {
+      return { ok: false, error: 'Shift bawaan harus termasuk shift yang diizinkan.' };
+    }
+    const nowWib = getWibComponents(new Date());
+    // shiftTimes tidak dikirim = jam lama dipertahankan; dikirim = diganti (hanya shift allowed & jam valid).
+    let shiftTimes: DivisionShiftRule['shiftTimes'];
+    if (patch.shiftTimes === undefined) {
+      shiftTimes = divisionShiftRules.find((rule) => rule.division === division)?.shiftTimes;
+    } else {
+      const clean: NonNullable<DivisionShiftRule['shiftTimes']> = {};
+      for (const code of allowed) {
+        const startTime = normalizeShiftTime(patch.shiftTimes[code]?.startTime);
+        const endTime = normalizeShiftTime(patch.shiftTimes[code]?.endTime);
+        if (!startTime || !endTime) continue;
+        clean[code] = { startTime, endTime };
+      }
+      shiftTimes = clean;
+    }
+    // shiftTolerances tidak dikirim = toleransi lama dipertahankan.
+    let shiftTolerances: DivisionShiftRule['shiftTolerances'];
+    if (patch.shiftTolerances === undefined) {
+      shiftTolerances = divisionShiftRules.find((rule) => rule.division === division)?.shiftTolerances;
+    } else {
+      const clean: NonNullable<DivisionShiftRule['shiftTolerances']> = {};
+      for (const code of allowed) {
+        const raw = patch.shiftTolerances[code];
+        if (!raw) continue;
+        const toMinutes = (value: number) =>
+          Number.isFinite(value) ? Math.min(720, Math.max(0, Math.round(value))) : 0;
+        clean[code] = {
+          earlyInMinutes: toMinutes(raw.earlyInMinutes),
+          lateInMinutes: toMinutes(raw.lateInMinutes),
+          earlyOutMinutes: toMinutes(raw.earlyOutMinutes),
+        };
+      }
+      shiftTolerances = clean;
+    }
+    const updated: DivisionShiftRule = {
+      division,
+      allowedShiftCodes: allowed,
+      defaultShiftCode: patch.defaultShiftCode,
+      shiftTimes: shiftTimes ?? {},
+      shiftTolerances: shiftTolerances ?? {},
+      updatedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+    };
+    setDivisionShiftRules((prev) => {
+      const nextRules = prev.some((rule) => rule.division === division)
+        ? prev.map((rule) => (rule.division === division ? updated : rule))
+        : [...prev, updated];
+      saveStoredJson(LOCAL_DIVISION_SHIFT_RULES_KEY, nextRules);
+      return nextRules;
+    });
+    return { ok: true };
+  };
+
+  /** Template shift efektif sebuah divisi: jam khusus divisi bila HRD sudah mengubahnya. */
+  const shiftTemplateFor: HrisContextValue['shiftTemplateFor'] = (code, division) =>
+    division
+      ? shiftTemplateForDivision(code, division, divisionShiftRules)
+      : resolveShiftTemplate(code);
+
+  /** Hapus satu divisi beserta aturan jam kerjanya. Label divisi pada karyawan lama tidak ikut diubah. */
+  const deleteDivision: HrisContextValue['deleteDivision'] = async (division) => {
+    const same = (value: Division) => value.trim().toLowerCase() === division.trim().toLowerCase();
+    if (!divisions.some(same)) {
+      return { ok: false, error: `Divisi "${division}" tidak ditemukan.` };
+    }
+    const next = divisions.filter((item) => !same(item));
+    setDivisions(next);
+    saveStoredJson(LOCAL_DIVISIONS_KEY, next);
+    setDivisionShiftRules((prevRules) => {
+      const nextRules = prevRules.filter((rule) => !same(rule.division));
+      saveStoredJson(LOCAL_DIVISION_SHIFT_RULES_KEY, nextRules);
+      return nextRules;
+    });
+    return { ok: true };
+  };
+
+  /** Hapus semua divisi beserta seluruh aturan jam kerjanya. */
+  const clearAllDivisions: HrisContextValue['clearAllDivisions'] = async () => {
+    setDivisions([]);
+    saveStoredJson(LOCAL_DIVISIONS_KEY, []);
+    setDivisionShiftRules([]);
+    saveStoredJson(LOCAL_DIVISION_SHIFT_RULES_KEY, []);
+    return { ok: true };
+  };
+
+  /** Admin HRD menambah jadwal karyawan pada satu tanggal; shift wajib sesuai divisi karyawan. */
+  const addScheduleEntry: HrisContextValue['addScheduleEntry'] = async (input) => {
+    const employee = employees.find((emp) => emp.uid === input.uid);
+    if (!employee) {
+      return { ok: false, error: 'Pilih karyawan yang akan dijadwalkan.' };
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
+      return { ok: false, error: 'Tanggal jadwal tidak valid.' };
+    }
+    if (!isShiftAllowedForDivision(employee.division, input.shiftCode, divisionShiftRules)) {
+      const rule = resolveDivisionShiftRule(employee.division, divisionShiftRules);
+      const allowedLabels = rule.allowedShiftCodes
+        .map(
+          (code) =>
+            shiftTemplateForDivision(code, employee.division, divisionShiftRules).label ?? code
+        )
+        .join(' | ');
+      return {
+        ok: false,
+        error: `Divisi ${employee.division} hanya memakai shift: ${allowedLabels}.`,
+      };
+    }
+    const id = `sch_${employee.uid}_${input.date.replace(/-/g, '')}`;
+    // Satu shift per karyawan per hari: tolak penugasan yang bertabrakan dengan jadwal lain.
+    const conflict = findScheduleConflict({
+      uid: employee.uid,
+      date: input.date,
+      shiftCode: input.shiftCode,
+      schedules,
+      ignoreId: id,
+      rule: resolveDivisionShiftRule(employee.division, divisionShiftRules),
+    });
+    if (conflict) {
+      return {
+        ok: false,
+        error: `Jadwal bentrok dengan shift ${conflict.shiftCode} pada ${conflict.date}.`,
+      };
+    }
+    const entry: ScheduleEntry = {
+      id,
+      uid: employee.uid,
+      nik: employee.nik,
+      date: input.date,
+      shiftCode: input.shiftCode,
+      location: sanitizeString(input.location || 'Kantor PT Sinar Bunga Mas', 160),
+      notes: sanitizeString(input.notes ?? '', 300),
+      patrolCompleted: false,
+    };
+    if (!isFirebaseSynced) {
+      setSchedules((prev) => [entry, ...prev.filter((item) => item.id !== id)]);
+      return { ok: true };
+    }
+    try {
+      await setDoc(doc(db, 'schedules', id), {
+        uid: entry.uid,
+        nik: entry.nik,
+        date: entry.date,
+        shiftCode: entry.shiftCode,
+        location: entry.location,
+        notes: entry.notes,
+        patrolCompleted: entry.patrolCompleted,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return { ok: true };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `schedules/${id}`);
+      return { ok: false, error: 'Jadwal gagal disimpan. Coba lagi.' };
+    }
+  };
+
+  /** Jadwal massal: satu shift untuk semua karyawan aktif pada satu divisi, per rentang tanggal. */
+  const addScheduleEntriesBulk: HrisContextValue['addScheduleEntriesBulk'] = async (input) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(input.endDate)) {
+      return { ok: false, error: 'Rentang tanggal jadwal tidak valid.' };
+    }
+    const days = calculateInclusiveDays(input.startDate, input.endDate);
+    if (days <= 0) {
+      return { ok: false, error: 'Tanggal selesai harus sama atau setelah tanggal mulai.' };
+    }
+    if (days > 62) {
+      return { ok: false, error: 'Rentang jadwal maksimal 62 hari sekali buat.' };
+    }
+    const members = employees.filter((emp) => emp.division === input.division && emp.active);
+    if (members.length === 0) {
+      return { ok: false, error: `Belum ada karyawan aktif di divisi ${input.division}.` };
+    }
+    if (!isShiftAllowedForDivision(input.division, input.shiftCode, divisionShiftRules)) {
+      const rule = resolveDivisionShiftRule(input.division, divisionShiftRules);
+      return {
+        ok: false,
+        error: `Divisi ${input.division} hanya memakai shift: ${rule.allowedShiftCodes
+          .map((code) => shiftTemplateForDivision(code, input.division, divisionShiftRules).label ?? code)
+          .join(' | ')}.`,
+      };
+    }
+
+    const start = new Date(`${input.startDate}T00:00:00`);
+    const created: ScheduleEntry[] = [];
+    let skipped = 0;
+    for (let i = 0; i < days; i += 1) {
+      const cursor = new Date(start.getTime() + i * 86_400_000);
+      const isoDate = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(
+        cursor.getDate()
+      ).padStart(2, '0')}`;
+      for (const emp of members) {
+        const id = `sch_${emp.uid}_${isoDate.replace(/-/g, '')}`;
+        const conflict = findScheduleConflict({
+          uid: emp.uid,
+          date: isoDate,
+          shiftCode: input.shiftCode,
+          schedules,
+          ignoreId: id,
+          rule: resolveDivisionShiftRule(emp.division, divisionShiftRules),
+        });
+        if (conflict) {
+          skipped += 1;
+          continue;
+        }
+        created.push({
+          id,
+          uid: emp.uid,
+          nik: emp.nik,
+          date: isoDate,
+          shiftCode: input.shiftCode,
+          location: sanitizeString(input.location || 'Kantor PT Sinar Bunga Mas', 160),
+          notes: sanitizeString(input.notes ?? `Jadwal divisi ${input.division}`, 300),
+          patrolCompleted: false,
+        });
+      }
+    }
+    if (created.length === 0) {
+      return { ok: false, error: 'Semua tanggal sudah punya jadwal yang bentrok.' };
+    }
+
+    if (!isFirebaseSynced) {
+      const ids = new Set(created.map((entry) => entry.id));
+      setSchedules((prev) => [...created, ...prev.filter((item) => !ids.has(item.id))]);
+      return { ok: true, created: created.length, skipped };
+    }
+
+    try {
+      for (const entry of created) {
+        await setDoc(doc(db, 'schedules', entry.id), {
+          uid: entry.uid,
+          nik: entry.nik,
+          date: entry.date,
+          shiftCode: entry.shiftCode,
+          location: entry.location,
+          notes: entry.notes,
+          patrolCompleted: entry.patrolCompleted,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+      return { ok: true, created: created.length, skipped };
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'schedules');
+      return { ok: false, error: 'Jadwal massal gagal disimpan.' };
+    }
+  };
+
+  const deleteScheduleEntry: HrisContextValue['deleteScheduleEntry'] = async (scheduleId) => {
+    if (!isFirebaseSynced) {
+      setSchedules((prev) => prev.filter((item) => item.id !== scheduleId));
+      return;
+    }
+    try {
+      await deleteDoc(doc(db, 'schedules', scheduleId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `schedules/${scheduleId}`);
+    }
+  };
+
+  /** Hapus seluruh baris jadwal: mode konsol dari state, mode Firebase sekaligus dari Firestore. */
+  const clearAllSchedules: HrisContextValue['clearAllSchedules'] = async () => {
+    const entries = schedules;
+    if (isFirebaseSynced && entries.length > 0) {
+      const results = await Promise.allSettled(
+        entries.map((entry) => deleteDoc(doc(db, 'schedules', entry.id)))
+      );
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed > 0) {
+        setSchedules([]);
+        return {
+          ok: false,
+          error: `${failed} dari ${entries.length} jadwal gagal dihapus. Periksa koneksi lalu coba lagi.`,
+          deleted: entries.length - failed,
+        };
+      }
+    }
+    setSchedules([]);
+    return { ok: true, deleted: entries.length };
+  };
+
+  // Komponen gaji (BPJS, tunjangan, kasbon) — dapat diset global, per divisi, atau per karyawan
+  const addPayslipComponent: HrisContextValue['addPayslipComponent'] = async (input) => {
+    const name = sanitizeString(input.name, 80);
+    if (name.length < 3) {
+      return { ok: false, error: 'Nama komponen minimal 3 karakter.' };
+    }
+    if (!Number.isFinite(input.amount) || input.amount < 0) {
+      return { ok: false, error: 'Nominal komponen tidak valid.' };
+    }
+    if (input.basis === 'persenGajiPokok' && input.amount > 100) {
+      return { ok: false, error: 'Persentase gaji pokok maksimal 100%.' };
+    }
+    if (input.scope === 'division' && !input.division) {
+      return { ok: false, error: 'Pilih divisi untuk komponen ini.' };
+    }
+    if (input.scope === 'employee' && !input.employeeUid) {
+      return { ok: false, error: 'Pilih karyawan untuk komponen ini.' };
+    }
+    const nowWib = getWibComponents(new Date());
+    const component: PayslipComponent = {
+      ...input,
+      name,
+      id: `pc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      active: input.active ?? true,
+      createdAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+    };
+    setPayslipComponents((prev) => {
+      const next = [component, ...prev];
+      saveStoredJson(LOCAL_PAYSLIP_COMPONENTS_KEY, next);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const updatePayslipComponent: HrisContextValue['updatePayslipComponent'] = async (id, updates) => {
+    if (updates.amount !== undefined && (!Number.isFinite(updates.amount) || updates.amount < 0)) {
+      return { ok: false, error: 'Nominal komponen tidak valid.' };
+    }
+    if (updates.name !== undefined && sanitizeString(updates.name, 80).length < 3) {
+      return { ok: false, error: 'Nama komponen minimal 3 karakter.' };
+    }
+    setPayslipComponents((prev) => {
+      const next = prev.map((item) =>
+        item.id === id
+          ? { ...item, ...updates, name: updates.name ? sanitizeString(updates.name, 80) : item.name }
+          : item
+      );
+      saveStoredJson(LOCAL_PAYSLIP_COMPONENTS_KEY, next);
+      return next;
+    });
+    return { ok: true };
+  };
+
+  const deletePayslipComponent: HrisContextValue['deletePayslipComponent'] = async (id) => {
+    setPayslipComponents((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      saveStoredJson(LOCAL_PAYSLIP_COMPONENTS_KEY, next);
+      return next;
+    });
+  };
+
+  const updatePayrollSettings: HrisContextValue['updatePayrollSettings'] = async (patch) => {
+    const next: PayrollSettings = { ...payrollSettings, ...patch };
+    const bounded: Array<[keyof PayrollSettings, number, number, string]> = [
+      ['bpjsKesehatanRate', 0, 100, 'Persentase BPJS Kesehatan 0-100%.'],
+      ['bpjsKetenagakerjaanRate', 0, 100, 'Persentase BPJS Ketenagakerjaan 0-100%.'],
+      ['lateDeductionPerMinute', 0, 1_000_000, 'Potongan keterlambatan per menit 0-1.000.000.'],
+      ['overtimeHourlyMultiplier', 0, 10, 'Pengali upah lembur per jam 0-10.'],
+      ['overtimeSessionRate', 0, 10_000_000, 'Tarif lembur per sesi 0-10.000.000.'],
+    ];
+    for (const [key, min, max, message] of bounded) {
+      const value = next[key];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+        return { ok: false, error: message };
+      }
+    }
+    if (next.overtimeRateMode !== 'perJam' && next.overtimeRateMode !== 'perSesi') {
+      return { ok: false, error: 'Mode lembur tidak dikenal.' };
+    }
+    setPayrollSettings(next);
+    saveStoredJson(LOCAL_PAYROLL_SETTINGS_KEY, next);
+    return { ok: true };
+  };
+
+  const approvedLeaveFor = useCallback(
+    (uid: string, isoDate: string) => findApprovedLeaveOnDate(leaves, uid, isoDate),
+    [leaves]
+  );
+
+  const currentLeaveToday = useMemo(
+    () => (currentUser ? findApprovedLeaveOnDate(leaves, currentUser.uid, wibNow.isoDate) : null),
+    [currentUser, leaves, wibNow.isoDate]
+  );
+
+  // Input Todo List oleh Supervisor / Admin
+  const addTodoTask: HrisContextValue['addTodoTask'] = async (taskInput) => {
+    const nowWib = getWibComponents(new Date());
+    const id = `todo_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const newTask: TodoTask = {
+      ...taskInput,
+      id,
+      status: 'Belum Dikerjakan',
+      createdAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+    };
+    setTodos((prev) => {
+      const next = [newTask, ...prev];
+      try {
+        localStorage.setItem('sbum_hris_todos_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Karyawan Mengirim Laporan Todo List
+  const submitTodoReport: HrisContextValue['submitTodoReport'] = async (taskId, report) => {
+    const nowWib = getWibComponents(new Date());
+    setTodos((prev) => {
+      const next = prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              status: 'Menunggu Review' as TodoStatus,
+              reportText: report.text ?? t.reportText,
+              reportPhotoName: report.photoName ?? t.reportPhotoName,
+              reportPhotoUrl: report.photoUrl ?? t.reportPhotoUrl,
+              reportDocumentName: report.documentName ?? t.reportDocumentName,
+              reportDocumentUrl: report.documentUrl ?? t.reportDocumentUrl,
+              submittedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+            }
+          : t
+      );
+      try {
+        localStorage.setItem('sbum_hris_todos_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Supervisor / Admin Mereview Tugas Todo List
+  const reviewTodoTask: HrisContextValue['reviewTodoTask'] = async (taskId, status, notes) => {
+    if (!currentUser) return;
+    const nowWib = getWibComponents(new Date());
+    setTodos((prev) => {
+      const next = prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              status,
+              reviewNotes: notes ?? t.reviewNotes,
+              reviewedBy: `${currentUser.name} (${currentUser.role})`,
+              reviewedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
+            }
+          : t
+      );
+      try {
+        localStorage.setItem('sbum_hris_todos_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
   const value: HrisContextValue = {
     authReady,
     firebaseUser,
-    adminSession,
-    isAdminSession,
     isFirebaseSynced,
-    needsEmailVerification: Boolean(firebaseUser && !firebaseUser.emailVerified && !isAdminSession),
+    needsEmailVerification: Boolean(firebaseUser && !firebaseUser.emailVerified),
     employees,
     currentUser,
     attendance,
@@ -1321,16 +2341,18 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     schedules,
     localPhotos,
     wibNow,
+    theme,
+    setTheme,
+    toggleTheme,
     loginWithEmail,
-    loginAsAdmin,
-    registerWithEmail,
     loginWithGoogle,
     sendResetPassword,
     resendVerificationEmail,
     refreshAuthUser,
     changePassword,
-    changeAdminPassword,
+    resetUserPassword,
     logout,
+    canReview,
     addEmployeeByHrd,
     updateEmployeeProfile,
     signContract,
@@ -1346,6 +2368,32 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     reviewOvertime,
     reviewShiftSwap,
     reviewExitClearance,
+    todos,
+    divisions,
+    addDivision,
+    deleteDivision,
+    clearAllDivisions,
+    divisionShiftRules,
+    updateDivisionShiftRule,
+    shiftTemplateFor,
+    addScheduleEntry,
+    addScheduleEntriesBulk,
+    deleteScheduleEntry,
+    clearAllSchedules,
+    payslipComponents,
+    addPayslipComponent,
+    updatePayslipComponent,
+    deletePayslipComponent,
+    payrollSettings,
+    updatePayrollSettings,
+    approvedLeaveFor,
+    currentLeaveToday,
+    addTodoTask,
+    submitTodoReport,
+    reviewTodoTask,
+    validateAttendance,
+    updateLeaveQuota,
+    toggleEmployeeActive,
   };
 
   return <HrisContext.Provider value={value}>{children}</HrisContext.Provider>;

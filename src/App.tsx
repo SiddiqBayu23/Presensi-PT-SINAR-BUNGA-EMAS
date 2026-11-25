@@ -5,22 +5,25 @@
 
 import React, { useMemo, useState } from 'react';
 import { CheckCircle2, Loader2, X } from 'lucide-react';
-import { AdminDashboardView } from './components/AdminDashboardView';
-import { AttendanceModal } from './components/AttendanceModal';
-import { BottomNav } from './components/BottomNav';
-import { DashboardHome } from './components/DashboardHome';
-import { DocumentsView } from './components/DocumentsView';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { HeaderBar } from './components/HeaderBar';
-import { HrdView, type HrdSubTab } from './components/HrdView';
-import { LoginView } from './components/LoginView';
-import { ScheduleView } from './components/ScheduleView';
-import { SbumBadgeIcon } from './components/SbumLogo';
-import { SubmissionsView } from './components/SubmissionsView';
+import { AdminDashboardView } from './roles/admin/AdminDashboardView';
+import { AttendanceModal } from './shared/AttendanceModal';
+import { BottomNav } from './shared/BottomNav';
+import { DashboardHome } from './roles/karyawan/DashboardHome';
+import { DocumentsView } from './roles/karyawan/DocumentsView';
+import { ErrorBoundary } from './shared/ErrorBoundary';
+import { HeaderBar } from './shared/HeaderBar';
+import { HrdView, type HrdSubTab } from './roles/admin/HrdView';
+import { LoginView } from './shared/LoginView';
+import { ScheduleView } from './roles/karyawan/ScheduleView';
+import { SbumBadgeIcon } from './shared/SbumLogo';
+import { SettingsView } from './shared/SettingsView';
+import { SubmissionsView } from './roles/karyawan/SubmissionsView';
+import { SupervisorDashboardView } from './roles/supervisor/SupervisorDashboardView';
+import { SupervisorPanelView } from './roles/supervisor/SupervisorPanelView';
+import { PresensiView } from './shared/PresensiView';
 import { HrisProvider, useHris } from './context/HrisContext';
 import type {
   DocumentSubTab,
-  LoginIntent,
   MainTab,
   SubmissionSubTab,
 } from './types/hris';
@@ -30,28 +33,30 @@ function HrisShell() {
     authReady,
     firebaseUser,
     needsEmailVerification,
-    isAdminSession,
     currentUser,
     leaves,
     overtimes,
     shiftSwaps,
     exitClearances,
+    canReview,
   } = useHris();
 
   const [activeTab, setActiveTab] = useState<MainTab>('beranda');
   const [submissionSubTab, setSubmissionSubTab] = useState<SubmissionSubTab>('izin');
   const [documentSubTab, setDocumentSubTab] = useState<DocumentSubTab>('slip');
   const [hrdSubTab, setHrdSubTab] = useState<HrdSubTab>('persetujuan');
+  const [employeeSearchSeed, setEmployeeSearchSeed] = useState('');
   const [attendanceModalMode, setAttendanceModalMode] = useState<'in' | 'out' | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
+  // Badge = pengajuan yang memang bisa diputuskan user ini (HRD: semua, supervisor: bawahan se-divisi).
   const pendingApprovalsCount = useMemo(
     () =>
-      leaves.filter((l) => l.status === 'Menunggu').length +
-      overtimes.filter((o) => o.status === 'Menunggu').length +
-      shiftSwaps.filter((s) => s.status === 'Menunggu').length +
-      exitClearances.filter((e) => e.status === 'Menunggu').length,
-    [leaves, overtimes, shiftSwaps, exitClearances]
+      leaves.filter((l) => l.status === 'Menunggu' && canReview(l.uid, l.supervisorUid)).length +
+      overtimes.filter((o) => o.status === 'Menunggu' && canReview(o.uid, o.supervisorUid)).length +
+      shiftSwaps.filter((s) => s.status === 'Menunggu' && canReview(s.uid, s.supervisorUid)).length +
+      exitClearances.filter((e) => e.status === 'Menunggu' && canReview(e.uid, e.supervisorUid)).length,
+    [leaves, overtimes, shiftSwaps, exitClearances, canReview]
   );
 
   const showToast = (msg: string) => {
@@ -59,19 +64,8 @@ function HrisShell() {
     window.setTimeout(() => setToast(null), 3500);
   };
 
-  const handleLoginSuccess = (intent: LoginIntent) => {
-    if (intent === 'clock-in') {
-      setActiveTab('beranda');
-      setAttendanceModalMode('in');
-    } else if (intent === 'clock-out') {
-      setActiveTab('beranda');
-      setAttendanceModalMode('out');
-    } else if (intent === 'profile') {
-      setDocumentSubTab('profil');
-      setActiveTab('dokumen');
-    } else {
-      setActiveTab('beranda');
-    }
+  const handleLoginSuccess = () => {
+    setActiveTab('beranda');
   };
 
   const navigateSubmission = (sub: SubmissionSubTab) => {
@@ -84,7 +78,8 @@ function HrisShell() {
     setActiveTab('dokumen');
   };
 
-  if (!authReady || (firebaseUser && !needsEmailVerification && !currentUser && !isAdminSession)) {
+  // Auth Firebase belum selesai dipulihkan atau profil karyawan sedang dimuat.
+  if (!authReady || (firebaseUser && !needsEmailVerification && !currentUser)) {
     return (
       <div className="min-h-screen bg-[#F4F7FB] flex flex-col items-center justify-center p-6 text-center gap-4">
         <SbumBadgeIcon className="w-14 h-14" />
@@ -96,15 +91,17 @@ function HrisShell() {
     );
   }
 
-  if (!currentUser || (!isAdminSession && (!firebaseUser || needsEmailVerification))) {
+  if (!currentUser || !firebaseUser || needsEmailVerification) {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;
   }
 
   const isHrd = currentUser.role === 'hrd';
-  const safeActiveTab: MainTab = !isHrd && activeTab === 'hrd' ? 'beranda' : activeTab;
+  const isSupervisor = currentUser.role === 'supervisor';
+  const canAccessHrdPanel = isHrd || isSupervisor;
+  const safeActiveTab: MainTab = !canAccessHrdPanel && activeTab === 'hrd' ? 'beranda' : activeTab;
 
   const handleSelectTab = (tab: MainTab) => {
-    if (tab === 'hrd' && !isHrd) {
+    if (tab === 'hrd' && !canAccessHrdPanel) {
       setActiveTab('beranda');
       return;
     }
@@ -119,11 +116,11 @@ function HrisShell() {
         pendingCount={pendingApprovalsCount}
       />
 
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 pt-5 pb-24 lg:pb-10">
+      <main className="flex-1 w-full mx-auto px-4 sm:px-6 lg:px-8 lg:w-[92%] max-w-[1900px] pt-5 pb-24 lg:pb-10">
         {toast && (
           <div
             role="status"
-            className="no-print mb-4 rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs sm:text-sm font-bold text-emerald-800 flex items-center justify-between gap-2 shadow-xs"
+            className="no-print toast-enter mb-4 rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs sm:text-sm font-bold text-emerald-800 flex items-center justify-between gap-2 shadow-xs"
           >
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
@@ -140,6 +137,7 @@ function HrisShell() {
           </div>
         )}
 
+        <div key={safeActiveTab} className="view-enter">
         {safeActiveTab === 'beranda' &&
           (isHrd ? (
             <AdminDashboardView
@@ -149,7 +147,22 @@ function HrisShell() {
                 setHrdSubTab(sub);
                 handleSelectTab('hrd');
               }}
+              onOpenEmployeeDirectory={(searchTerm) => {
+                setEmployeeSearchSeed(searchTerm);
+                setHrdSubTab('karyawan');
+                handleSelectTab('hrd');
+              }}
               onShowToast={showToast}
+            />
+          ) : isSupervisor ? (
+            <SupervisorDashboardView
+              onOpenPanel={() => {
+                setHrdSubTab('persetujuan');
+                handleSelectTab('hrd');
+              }}
+              onNavigateTab={handleSelectTab}
+              onNavigateSubmission={navigateSubmission}
+              onOpenAttendance={(mode) => setAttendanceModalMode(mode)}
             />
           ) : (
             <DashboardHome
@@ -159,6 +172,10 @@ function HrisShell() {
               onNavigateDocument={navigateDocument}
             />
           ))}
+
+        {safeActiveTab === 'presensi' && (
+          <PresensiView onOpenAttendance={(mode) => setAttendanceModalMode(mode)} />
+        )}
 
         {safeActiveTab === 'schedule' && (
           <ScheduleView onOpenShiftSwap={navigateSubmission} />
@@ -179,15 +196,26 @@ function HrisShell() {
         )}
 
         {safeActiveTab === 'hrd' && isHrd && (
-          <HrdView activeSubTab={hrdSubTab} onChangeSubTab={setHrdSubTab} />
+          <HrdView
+            activeSubTab={hrdSubTab}
+            onChangeSubTab={setHrdSubTab}
+            employeeSearchSeed={employeeSearchSeed}
+          />
         )}
+
+        {safeActiveTab === 'hrd' && isSupervisor && (
+          <SupervisorPanelView onShowToast={showToast} />
+        )}
+
+        {safeActiveTab === 'pengaturan' && <SettingsView />}
+        </div>
       </main>
 
       <BottomNav
         activeTab={safeActiveTab}
         onSelectTab={handleSelectTab}
         pendingCount={pendingApprovalsCount}
-        isHrd={isHrd}
+        panelAccess={canAccessHrdPanel}
       />
 
       {attendanceModalMode && (

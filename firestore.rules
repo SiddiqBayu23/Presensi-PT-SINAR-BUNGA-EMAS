@@ -54,13 +54,13 @@ service cloud.firestore {
     }
 
     function isValidDivision(div) {
-      return div is string && div.size() <= 32 &&
-        div in ['HRD', 'Security', 'Cleaning Service', 'Operasional', 'Keuangan'];
+      // Divisi standar atau divisi buatan HRD (maks. 32 karakter).
+      return div is string && div.size() >= 2 && div.size() <= 32;
     }
 
     function isValidShift(shift) {
       return shift is string && shift.size() <= 16 &&
-        shift in ['REGULER', 'PAGI', 'SIANG', 'MALAM'];
+        shift in ['REGULER', 'PAGI', 'SIANG', 'MALAM', 'SECURITY24'];
     }
 
     function isValidApprovalStatus(st) {
@@ -70,6 +70,35 @@ service cloud.firestore {
 
     function employeeExists(uid) {
       return exists(/databases/$(database)/documents/employees/$(uid));
+    }
+
+    function isValidSupervisorUid(value) {
+      return value is string && value.size() <= 128 &&
+        (value == '' || value.matches('^[a-zA-Z0-9_\\-]+$'));
+    }
+
+    // Atasan langsung wajib supervisor aktif pada divisi yang sama (atau kosong).
+    // get()/exists() hanya dipakai di create/update — bukan di allow list.
+    function isValidSupervisorAssignment(data) {
+      return data.get('supervisorUid', '') == '' ||
+        (
+          employeeExists(data.get('supervisorUid', '')) &&
+          get(/databases/$(database)/documents/employees/$(data.get('supervisorUid', ''))).data.role == 'supervisor' &&
+          get(/databases/$(database)/documents/employees/$(data.get('supervisorUid', ''))).data.division == data.division
+        );
+    }
+
+    // Supervisor divisi: role 'supervisor' pada dokumen kepegawaian sendiri.
+    // Hanya untuk single-doc ops (get/update) — TIDAK PERNAH dipakai di allow list.
+    function isSupervisor() {
+      return isVerified() &&
+        employeeExists(request.auth.uid) &&
+        get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.role == 'supervisor';
+    }
+
+    // Pengajuan yang dirutekan ke supervisor pemanggil (field supervisorUid pada pengajuan).
+    function routedToSupervisor(data) {
+      return isSupervisor() && data.get('supervisorUid', '') == request.auth.uid;
     }
 
     // =========================================================================
@@ -95,18 +124,21 @@ service cloud.firestore {
           'uid', 'nik', 'name', 'position', 'division', 'role', 'shiftCode',
           'email', 'phone', 'address', 'joinDate', 'contractType', 'contractEnd',
           'contractSigned', 'contractSignedAt', 'baseSalary', 'positionAllowance',
-          'mealTransportAllowance', 'leaveQuota', 'active', 'createdAt', 'updatedAt'
+          'mealTransportAllowance', 'leaveQuota', 'active', 'supervisorUid', 'photoUrl', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
         isValidNik(data.nik) &&
         data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
         data.position is string && data.position.size() >= 2 && data.position.size() <= 80 &&
         isValidDivision(data.division) &&
-        data.role is string && data.role.size() <= 16 && data.role in ['hrd', 'employee'] &&
+        data.role is string && data.role.size() <= 16 && data.role in ['hrd', 'supervisor', 'employee'] &&
+        (data.role != 'hrd' || data.division == 'HRD') &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         isValidShift(data.shiftCode) &&
         data.email is string && data.email.size() >= 5 && data.email.size() <= 120 &&
         data.phone is string && data.phone.size() <= 30 &&
         data.address is string && data.address.size() <= 240 &&
+        data.get('photoUrl', '') is string && data.get('photoUrl', '').size() <= 400000 &&
         isValidIsoDate(data.joinDate) &&
         data.contractType is string && data.contractType.size() <= 10 &&
         data.contractType in ['PKWT', 'PKO', 'PKWTT'] &&
@@ -132,13 +164,17 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'uid', 'nik', 'employeeName', 'division', 'date', 'shiftCode',
-          'clockInTime', 'clockInPhotoVerified', 'clockInLat', 'clockInLng',
+          'clockInTime', 'clockInPhotoVerified', 'clockInPhotoUrl', 'clockInLat', 'clockInLng',
           'clockInAddress', 'clockInDistanceMeters', 'lateMinutes',
-          'clockOutTime', 'clockOutPhotoVerified', 'clockOutLat', 'clockOutLng',
-          'clockOutAddress', 'workMinutes', 'status', 'createdAt', 'updatedAt'
+          'clockOutTime', 'clockOutPhotoVerified', 'clockOutPhotoUrl', 'clockOutLat', 'clockOutLng',
+          'clockOutAddress', 'workMinutes', 'status', 'supervisorUid', 'createdAt', 'updatedAt'
         ]) &&
+        // URL unduhan foto absensi di Cloud Storage (opsional; kosong bila unggahan gagal).
+        data.get('clockInPhotoUrl', '') is string && data.get('clockInPhotoUrl', '').size() <= 512 &&
+        data.get('clockOutPhotoUrl', '') is string && data.get('clockOutPhotoUrl', '').size() <= 512 &&
         isValidId(data.uid) &&
         isValidNik(data.nik) &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
         isValidDivision(data.division) &&
         isValidIsoDate(data.date) &&
@@ -169,12 +205,14 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'uid', 'nik', 'employeeName', 'division', 'type', 'startDate', 'endDate',
-          'days', 'reason', 'status', 'createdLabel', 'reviewedBy', 'createdAt', 'updatedAt'
+          'days', 'reason', 'status', 'createdLabel', 'reviewedBy', 'supervisorUid',
+          'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
         isValidNik(data.nik) &&
         data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
         isValidDivision(data.division) &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         data.type is string && data.type.size() <= 32 &&
         data.type in ['Cuti Tahunan', 'Izin Sakit', 'Izin Khusus', 'Izin Pribadi'] &&
         isValidIsoDate(data.startDate) &&
@@ -197,12 +235,13 @@ service cloud.firestore {
         data.keys().hasOnly([
           'uid', 'nik', 'employeeName', 'division', 'date', 'startTime', 'endTime',
           'hours', 'estimatedPay', 'reason', 'status', 'createdLabel', 'reviewedBy',
-          'createdAt', 'updatedAt'
+          'supervisorUid', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
         isValidNik(data.nik) &&
         data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
         isValidDivision(data.division) &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         isValidIsoDate(data.date) &&
         data.startTime is string && data.startTime.size() <= 8 &&
         data.endTime is string && data.endTime.size() <= 8 &&
@@ -223,12 +262,13 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'uid', 'nik', 'employeeName', 'division', 'date', 'fromShift', 'toShift',
-          'reason', 'status', 'createdLabel', 'reviewedBy', 'createdAt', 'updatedAt'
+          'reason', 'status', 'createdLabel', 'reviewedBy', 'supervisorUid', 'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
         isValidNik(data.nik) &&
         data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
         isValidDivision(data.division) &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         isValidIsoDate(data.date) &&
         isValidShift(data.fromShift) &&
         isValidShift(data.toShift) &&
@@ -249,7 +289,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'uid', 'nik', 'employeeName', 'position', 'division', 'lastWorkingDate',
-          'reason', 'checklist', 'status', 'createdLabel', 'reviewedBy',
+          'reason', 'checklist', 'status', 'createdLabel', 'reviewedBy', 'supervisorUid',
           'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.uid) &&
@@ -257,6 +297,7 @@ service cloud.firestore {
         data.employeeName is string && data.employeeName.size() >= 2 && data.employeeName.size() <= 100 &&
         data.position is string && data.position.size() >= 2 && data.position.size() <= 80 &&
         isValidDivision(data.division) &&
+        isValidSupervisorUid(data.get('supervisorUid', '')) &&
         isValidIsoDate(data.lastWorkingDate) &&
         data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 500 &&
         // Pillar 5: Total Array Guarding (bounded list + first-element map shape check)
@@ -315,21 +356,25 @@ service cloud.firestore {
     match /employees/{employeeId} {
       allow get: if isValidId(employeeId) && (isOwner(employeeId) || isAdmin());
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(employeeId) &&
         isValidEmployee(incoming()) &&
+        isValidSupervisorAssignment(incoming()) &&
         incoming().uid == employeeId &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
         (
           // Admin can create any employee (including own HRD bootstrap profile)
           isAdmin() ||
-          // Standard employee self-onboarding: strictly bounded defaults, no self-assigned role/salary inflation
+          // Standard employee self-onboarding: strictly bounded defaults, no self-assigned role/salary/supervisor inflation
           (
             employeeId == request.auth.uid &&
             incoming().role == 'employee' &&
+            incoming().get('supervisorUid', '') == '' &&
             incoming().email == request.auth.token.email &&
             incoming().leaveQuota == 12 &&
             incoming().active == true &&
@@ -352,17 +397,18 @@ service cloud.firestore {
           // Tier 1: HRD Admin full management (except immutable uid/nik/createdAt)
           (
             isAdmin() &&
+            isValidSupervisorAssignment(incoming()) &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'name', 'position', 'division', 'role', 'shiftCode', 'email', 'phone',
               'address', 'contractType', 'contractEnd', 'contractSigned', 'contractSignedAt',
               'baseSalary', 'positionAllowance', 'mealTransportAllowance',
-              'leaveQuota', 'active', 'updatedAt'
+              'leaveQuota', 'active', 'supervisorUid', 'photoUrl', 'updatedAt'
             ])
           ) ||
           // Tier 2a: Employee updating own contact details
           (
             isOwner(employeeId) &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'address', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['phone', 'address', 'photoUrl', 'updatedAt'])
           ) ||
           // Tier 2b: Employee digitally signing own PKO/PKWT contract (one-way terminal lock)
           (
@@ -370,6 +416,19 @@ service cloud.firestore {
             existing().contractSigned == false &&
             incoming().contractSigned == true &&
             incoming().diff(existing()).affectedKeys().hasOnly(['contractSigned', 'contractSignedAt', 'updatedAt'])
+          ) ||
+          // Tier 3: Supervisor memotong kuota cuti bawahan yang disetujui (hanya penurunan kuota)
+          (
+            isSupervisor() &&
+            existing().get('supervisorUid', '') == request.auth.uid &&
+            incoming().leaveQuota <= existing().leaveQuota &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['leaveQuota', 'updatedAt'])
+          ) ||
+          // Tier 4: Supervisor mengubah shift bawahan hasil tukar shift yang disetujui
+          (
+            isSupervisor() &&
+            existing().get('supervisorUid', '') == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['shiftCode', 'updatedAt'])
           )
         );
 
@@ -383,7 +442,9 @@ service cloud.firestore {
       allow get: if isValidId(attendanceId) &&
         (isOwner(existing().uid) || isAdmin());
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(attendanceId) &&
@@ -395,7 +456,9 @@ service cloud.firestore {
         incoming().workMinutes == 0 &&
         incoming().status in ['Tepat Waktu', 'Terlambat'] &&
         (
-          (incoming().uid == request.auth.uid && employeeExists(request.auth.uid)) ||
+          // Employee: supervisorUid harus sama dengan atasan pada profil kepegawaiannya sendiri.
+          (incoming().uid == request.auth.uid && employeeExists(request.auth.uid) &&
+            incoming().get('supervisorUid', '') == get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.get('supervisorUid', '')) ||
           (isAdmin() && employeeExists(incoming().uid))
         );
 
@@ -422,7 +485,7 @@ service cloud.firestore {
             existing().clockOutTime == '' &&
             incoming().clockOutTime != '' &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'clockOutTime', 'clockOutPhotoVerified', 'clockOutLat', 'clockOutLng',
+              'clockOutTime', 'clockOutPhotoVerified', 'clockOutPhotoUrl', 'clockOutLat', 'clockOutLng',
               'clockOutAddress', 'workMinutes', 'status', 'updatedAt'
             ])
           )
@@ -435,13 +498,17 @@ service cloud.firestore {
     // Collection 4: /leaves/{leaveId}
     // =========================================================================
     match /leaves/{leaveId} {
-      allow get: if isValidId(leaveId) && (isOwner(existing().uid) || isAdmin());
+      allow get: if isValidId(leaveId) &&
+        (isOwner(existing().uid) || isAdmin() || routedToSupervisor(existing()));
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(leaveId) &&
         isValidLeave(incoming()) &&
+        isValidSupervisorAssignment(incoming()) &&
         incoming().status == 'Menunggu' &&
         incoming().reviewedBy == '' &&
         incoming().createdAt == request.time &&
@@ -458,8 +525,21 @@ service cloud.firestore {
         incoming().nik == existing().nik &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        isAdmin() &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt']);
+        (
+          // Tier 1: HRD Admin review (semua divisi)
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          ) ||
+          // Tier 2: Supervisor review pengajuan bawahan yang dirutekan ke dirinya
+          // (terminal lock status 'Menunggu' + larangan self-approval)
+          (
+            routedToSupervisor(existing()) &&
+            existing().status == 'Menunggu' &&
+            existing().uid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          )
+        );
 
       allow delete: if isValidId(leaveId) && isAdmin();
     }
@@ -468,13 +548,17 @@ service cloud.firestore {
     // Collection 5: /overtimes/{overtimeId}
     // =========================================================================
     match /overtimes/{overtimeId} {
-      allow get: if isValidId(overtimeId) && (isOwner(existing().uid) || isAdmin());
+      allow get: if isValidId(overtimeId) &&
+        (isOwner(existing().uid) || isAdmin() || routedToSupervisor(existing()));
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(overtimeId) &&
         isValidOvertime(incoming()) &&
+        isValidSupervisorAssignment(incoming()) &&
         incoming().status == 'Menunggu' &&
         incoming().reviewedBy == '' &&
         incoming().createdAt == request.time &&
@@ -491,8 +575,20 @@ service cloud.firestore {
         incoming().nik == existing().nik &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        isAdmin() &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt']);
+        (
+          // Tier 1: HRD Admin review (semua divisi)
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          ) ||
+          // Tier 2: Supervisor review pengajuan bawahan yang dirutekan ke dirinya
+          (
+            routedToSupervisor(existing()) &&
+            existing().status == 'Menunggu' &&
+            existing().uid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          )
+        );
 
       allow delete: if isValidId(overtimeId) && isAdmin();
     }
@@ -501,13 +597,17 @@ service cloud.firestore {
     // Collection 6: /shiftSwaps/{swapId}
     // =========================================================================
     match /shiftSwaps/{swapId} {
-      allow get: if isValidId(swapId) && (isOwner(existing().uid) || isAdmin());
+      allow get: if isValidId(swapId) &&
+        (isOwner(existing().uid) || isAdmin() || routedToSupervisor(existing()));
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(swapId) &&
         isValidShiftSwap(incoming()) &&
+        isValidSupervisorAssignment(incoming()) &&
         incoming().status == 'Menunggu' &&
         incoming().reviewedBy == '' &&
         incoming().createdAt == request.time &&
@@ -524,8 +624,20 @@ service cloud.firestore {
         incoming().nik == existing().nik &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        isAdmin() &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt']);
+        (
+          // Tier 1: HRD Admin review (semua divisi)
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          ) ||
+          // Tier 2: Supervisor review pengajuan bawahan yang dirutekan ke dirinya
+          (
+            routedToSupervisor(existing()) &&
+            existing().status == 'Menunggu' &&
+            existing().uid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'updatedAt'])
+          )
+        );
 
       allow delete: if isValidId(swapId) && isAdmin();
     }
@@ -534,13 +646,17 @@ service cloud.firestore {
     // Collection 7: /exitClearances/{exitId}
     // =========================================================================
     match /exitClearances/{exitId} {
-      allow get: if isValidId(exitId) && (isOwner(existing().uid) || isAdmin());
+      allow get: if isValidId(exitId) &&
+        (isOwner(existing().uid) || isAdmin() || routedToSupervisor(existing()));
       allow list: if isVerified() &&
-        (resource.data.uid == request.auth.uid || isBootstrapAdmin());
+        (resource.data.uid == request.auth.uid ||
+          resource.data.supervisorUid == request.auth.uid ||
+          isBootstrapAdmin());
 
       allow create: if isVerified() &&
         isValidId(exitId) &&
         isValidExitClearance(incoming()) &&
+        isValidSupervisorAssignment(incoming()) &&
         incoming().status == 'Menunggu' &&
         incoming().reviewedBy == '' &&
         incoming().createdAt == request.time &&
@@ -563,7 +679,14 @@ service cloud.firestore {
             isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'checklist', 'updatedAt'])
           ) ||
-          // Tier 2: Employee updating own checklist ONLY while status is still 'Menunggu' (Terminal Lock)
+          // Tier 2: Supervisor finalisasi exit clear bawahan yang dirutekan ke dirinya
+          (
+            routedToSupervisor(existing()) &&
+            existing().status == 'Menunggu' &&
+            existing().uid != request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reviewedBy', 'checklist', 'updatedAt'])
+          ) ||
+          // Tier 3: Employee updating own checklist ONLY while status is still 'Menunggu' (Terminal Lock)
           (
             isOwner(existing().uid) &&
             existing().status == 'Menunggu' &&

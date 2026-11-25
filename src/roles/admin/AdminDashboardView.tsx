@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   ArrowRight,
   Banknote,
+  Building2,
   CalendarClock,
   Camera,
   Check,
@@ -11,29 +12,41 @@ import {
   CloudOff,
   FileSpreadsheet,
   MapPin,
+  Search,
   ShieldCheck,
   UserPlus,
   Users,
   X,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
-import type { Division, MainTab, ShiftCode } from '../types/hris';
-import { SHIFT_TEMPLATES, calculatePayslip, formatDuration, formatRupiah } from '../utils/hrisLogic';
+import { useHris } from '../../context/HrisContext';
+import type { Division, MainTab, ShiftCode } from '../../types/hris';
+import {
+  SHIFT_TEMPLATES,
+  calculatePayslip,
+  defaultShiftForDivision,
+  formatDuration,
+  formatRupiah,
+  resolveDivisionShiftRule,
+} from '../../utils/hrisLogic';
 import type { HrdSubTab } from './HrdView';
+import { DashboardCalendar } from '../../shared/DashboardCalendar';
+import { EmployeeAvatar } from '../../shared/EmployeeAvatar';
+import { TodoListWidget } from '../../shared/TodoListWidget';
 
 interface AdminDashboardViewProps {
   onOpenAttendance: (mode: 'in' | 'out') => void;
   onNavigateTab: (tab: MainTab) => void;
   onOpenHrdSubTab: (subTab: HrdSubTab) => void;
+  /** Buka Data Karyawan dengan kata kunci pencarian terisi (akses cepat per karyawan). */
+  onOpenEmployeeDirectory: (searchTerm: string) => void;
   onShowToast: (message: string) => void;
 }
-
-const DIVISIONS: Division[] = ['HRD', 'Security', 'Cleaning Service', 'Operasional', 'Keuangan'];
 
 export function AdminDashboardView({
   onOpenAttendance,
   onNavigateTab,
   onOpenHrdSubTab,
+  onOpenEmployeeDirectory,
   onShowToast,
 }: AdminDashboardViewProps) {
   const {
@@ -52,18 +65,27 @@ export function AdminDashboardView({
     reviewOvertime,
     reviewShiftSwap,
     reviewExitClearance,
+    divisions,
+    divisionShiftRules,
+    payslipComponents,
+    payrollSettings,
+    addDivision,
+    shiftTemplateFor,
   } = useHris();
 
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [syncingFirebase, setSyncingFirebase] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [addingEmp, setAddingEmp] = useState(false);
+  const [directoryQuery, setDirectoryQuery] = useState('');
+  const [directoryDivision, setDirectoryDivision] = useState<string>('ALL');
   const [empForm, setEmpForm] = useState({
     email: '',
     name: '',
     position: '',
     division: 'Security' as Division,
     shiftCode: 'PAGI' as ShiftCode,
+    initialPassword: '0909',
   });
 
   const todayAttendance = useMemo(
@@ -95,15 +117,42 @@ export function AdminDashboardView({
         wibNow.periodKey,
         wibNow.periodLabel,
         attendance,
-        overtimes
+        overtimes,
+        payslipComponents,
+        payrollSettings
       );
       return sum + slip.netPay;
     }, 0);
-  }, [employees, attendance, overtimes, wibNow.periodKey, wibNow.periodLabel]);
+  }, [
+    employees,
+    attendance,
+    overtimes,
+    payslipComponents,
+    payrollSettings,
+    wibNow.periodKey,
+    wibNow.periodLabel,
+  ]);
+
+  /** Akses cepat semua karyawan: filter nama/NIK/divisi langsung dari beranda admin. */
+  const quickDirectory = useMemo(() => {
+    const q = directoryQuery.trim().toLowerCase();
+    return employees
+      .filter((emp) => {
+        const matchDivision = directoryDivision === 'ALL' || emp.division === directoryDivision;
+        const matchQuery =
+          !q ||
+          emp.name.toLowerCase().includes(q) ||
+          emp.nik.toLowerCase().includes(q) ||
+          emp.email.toLowerCase().includes(q) ||
+          emp.position.toLowerCase().includes(q);
+        return matchDivision && matchQuery;
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [employees, directoryQuery, directoryDivision]);
 
   const divisionBreakdown = useMemo(() => {
     const total = Math.max(1, employees.length);
-    return DIVISIONS.map((div) => {
+    return divisions.map((div) => {
       const count = employees.filter((e) => e.division === div).length;
       return {
         division: div,
@@ -111,7 +160,7 @@ export function AdminDashboardView({
         pct: Math.round((count / total) * 100),
       };
     });
-  }, [employees]);
+  }, [employees, divisions]);
 
   if (!currentUser) return null;
 
@@ -142,6 +191,7 @@ export function AdminDashboardView({
         position: '',
         division: 'Security',
         shiftCode: 'PAGI',
+        initialPassword: '0909',
       });
       setShowQuickAdd(false);
       onShowToast(`Karyawan ${res.employee.name} (${res.employee.nik}) berhasil ditambahkan.`);
@@ -174,7 +224,7 @@ export function AdminDashboardView({
     },
     {
       label: 'Export Semua',
-      sub: 'Excel 7 Sheet & CSV',
+      sub: 'Excel 7 Sheet & per kategori',
       icon: <FileSpreadsheet className="w-5 h-5 text-[#9B710D]" />,
       accent: 'bg-[#FFF8E6] border-[#F3D88B]',
       onClick: () => onOpenHrdSubTab('export'),
@@ -339,17 +389,33 @@ export function AdminDashboardView({
               onChange={(e) => setEmpForm({ ...empForm, position: e.target.value })}
               className="h-11 rounded-xl border border-slate-200 px-3.5 text-sm focus:border-[#0B2453] focus:outline-none"
             />
+            <input
+              type="password"
+              minLength={6}
+              placeholder="Kata Sandi Awal (min. 6)"
+              aria-label="Kata sandi awal akun login karyawan"
+              value={empForm.initialPassword}
+              onChange={(e) => setEmpForm({ ...empForm, initialPassword: e.target.value })}
+              className="h-11 rounded-xl border border-slate-200 px-3.5 text-sm focus:border-[#0B2453] focus:outline-none"
+            />
             <select
               aria-label="Divisi karyawan baru"
               value={empForm.division}
-              onChange={(e) => setEmpForm({ ...empForm, division: e.target.value as Division })}
+              onChange={(e) => {
+                const nextDivision = e.target.value as Division;
+                setEmpForm({
+                  ...empForm,
+                  division: nextDivision,
+                  shiftCode: defaultShiftForDivision(nextDivision, divisionShiftRules),
+                });
+              }}
               className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm"
             >
-              <option value="Security">Security</option>
-              <option value="Cleaning Service">Cleaning Service</option>
-              <option value="Operasional">Operasional</option>
-              <option value="Keuangan">Keuangan</option>
-              <option value="HRD">HRD</option>
+              {divisions.map((div) => (
+                <option key={div} value={div}>
+                  {div}
+                </option>
+              ))}
             </select>
             <select
               aria-label="Shift karyawan baru"
@@ -357,11 +423,16 @@ export function AdminDashboardView({
               onChange={(e) => setEmpForm({ ...empForm, shiftCode: e.target.value as ShiftCode })}
               className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm"
             >
-              {Object.values(SHIFT_TEMPLATES).map((s) => (
-                <option key={s.code} value={s.code}>
-                  {s.name}
-                </option>
-              ))}
+              {resolveDivisionShiftRule(empForm.division, divisionShiftRules).allowedShiftCodes.map(
+                (code) => {
+                  const tpl = shiftTemplateFor(code, empForm.division);
+                  return (
+                    <option key={code} value={code}>
+                      {tpl.name} ({tpl.startTime}–{tpl.endTime})
+                    </option>
+                  );
+                }
+              )}
             </select>
             <button
               type="submit"
@@ -442,6 +513,139 @@ export function AdminDashboardView({
             </button>
           ))}
         </div>
+      </section>
+
+      {/* Akses Cepat Semua Karyawan (item 10) */}
+      <section
+        aria-labelledby="akses-cepat-karyawan-heading"
+        className="rounded-3xl bg-white p-5 sm:p-6 shadow-[0_6px_24px_rgba(11,36,83,0.06)] border border-slate-200/70 space-y-4"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="w-1 h-5 rounded-full bg-[#C69214]" aria-hidden="true" />
+            <h2
+              id="akses-cepat-karyawan-heading"
+              className="text-base sm:text-lg font-extrabold text-[#0B2453]"
+            >
+              Akses Cepat Semua Karyawan
+            </h2>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={directoryQuery}
+                onChange={(e) => setDirectoryQuery(e.target.value)}
+                placeholder="Cari nama, NIK, atau email..."
+                aria-label="Cari karyawan untuk akses cepat"
+                className="h-10 w-full sm:w-64 rounded-xl border border-slate-200 pl-9 pr-3 text-xs focus:border-[#0B2453] focus:outline-none"
+              />
+            </div>
+            <select
+              aria-label="Filter divisi akses cepat"
+              value={directoryDivision}
+              onChange={(e) => setDirectoryDivision(e.target.value)}
+              className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-[#0B2453]"
+            >
+              <option value="ALL">Semua Divisi</option>
+              {divisions.map((div) => (
+                <option key={div} value={div}>
+                  {div}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => onOpenHrdSubTab('karyawan')}
+              className="h-10 px-3.5 rounded-xl bg-[#0B2453] hover:bg-[#163A7A] text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Users className="w-4 h-4" />
+              <span>Kelola Data Karyawan</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Tombol per divisi */}
+        <div className="flex flex-wrap gap-1.5">
+          {divisions.map((div) => {
+            const count = employees.filter((emp) => emp.division === div && emp.active).length;
+            return (
+              <button
+                key={div}
+                type="button"
+                onClick={() => {
+                  setDirectoryDivision(div);
+                  setDirectoryQuery('');
+                }}
+                className={`h-8 px-2.5 rounded-lg border text-[11px] font-extrabold inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  directoryDivision === div
+                    ? 'bg-[#0B2453] text-white border-[#0B2453]'
+                    : 'bg-[#F8FAFD] text-[#0B2453] border-slate-200 hover:border-[#B6810C]'
+                }`}
+              >
+                <Building2 className="w-3 h-3" />
+                <span>{div}</span>
+                <span className="tabular-nums opacity-70">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {quickDirectory.length === 0 ? (
+          <p className="text-xs text-slate-500 py-2">Tidak ada karyawan yang cocok dengan filter.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2.5 max-h-[26rem] overflow-y-auto pr-1">
+            {quickDirectory.map((emp) => {
+              const today = todayAttendance.find((rec) => rec.uid === emp.uid);
+              return (
+                <button
+                  key={emp.uid}
+                  type="button"
+                  onClick={() => onOpenEmployeeDirectory(emp.nik)}
+                  className="text-left rounded-2xl border border-slate-200 bg-[#F9FBFE] hover:border-[#B6810C] hover:bg-[#FFFBEB] p-3 transition-colors cursor-pointer"
+                >
+                  <div className="flex items-start gap-2.5">
+                    <EmployeeAvatar
+                      name={emp.name}
+                      photoUrl={emp.photoUrl}
+                      className="w-9 h-9"
+                      textClassName="text-[11px]"
+                    />
+                    <div className="flex-1 min-w-0 flex items-start justify-between gap-2">
+                      <span className="text-xs font-extrabold text-[#0B2453] truncate">{emp.name}</span>
+                      <span
+                        className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded-full shrink-0 ${
+                          emp.active
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border border-rose-200'
+                        }`}
+                      >
+                        {emp.active ? 'Aktif' : 'Non-Aktif'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono truncate">{emp.nik}</div>
+                  <div className="text-[10px] text-slate-600 truncate">
+                    {emp.division} &bull; {emp.position}
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
+                    <span className="font-mono font-bold text-slate-700">
+                      {SHIFT_TEMPLATES[emp.shiftCode]?.name ?? emp.shiftCode}
+                    </span>
+                    <span
+                      className={`font-bold ${
+                        today ? 'text-emerald-700' : 'text-slate-400'
+                      }`}
+                    >
+                      {today ? `Hadir ${today.clockInTime.slice(0, 5)}` : 'Belum absen'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       {/* Two-Column Operations Overview */}
@@ -580,8 +784,12 @@ export function AdminDashboardView({
                     <button
                       type="button"
                       onClick={() =>
-                        void reviewShiftSwap(sw.id, 'Disetujui').then(() =>
-                          onShowToast(`Tukar shift ${sw.employeeName} disetujui.`)
+                        void reviewShiftSwap(sw.id, 'Disetujui').then((res) =>
+                          onShowToast(
+                            res.ok
+                              ? `Tukar shift ${sw.employeeName} disetujui untuk ${sw.date}.`
+                              : (res.error ?? 'Tukar shift gagal disetujui.')
+                          )
                         )
                       }
                       className="h-9 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold inline-flex items-center gap-1 cursor-pointer"
@@ -591,8 +799,12 @@ export function AdminDashboardView({
                     <button
                       type="button"
                       onClick={() =>
-                        void reviewShiftSwap(sw.id, 'Ditolak').then(() =>
-                          onShowToast(`Tukar shift ${sw.employeeName} ditolak.`)
+                        void reviewShiftSwap(sw.id, 'Ditolak').then((res) =>
+                          onShowToast(
+                            res.ok
+                              ? `Tukar shift ${sw.employeeName} ditolak.`
+                              : (res.error ?? 'Tukar shift gagal ditolak.')
+                          )
                         )
                       }
                       className="h-9 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold inline-flex items-center gap-1 cursor-pointer"
@@ -720,6 +932,12 @@ export function AdminDashboardView({
           </div>
         </section>
       </div>
+
+      {/* Todo List & Penugasan Operasional */}
+      <TodoListWidget role="hrd" onShowToast={onShowToast} />
+
+      {/* Kalender Kerja & Izin Karyawan */}
+      <DashboardCalendar role="hrd" />
     </div>
   );
 }

@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+# Secret penandatangan token sesi konsol (dibuat otomatis oleh server).
+.admin-session-secret
+.admin-accounts.json

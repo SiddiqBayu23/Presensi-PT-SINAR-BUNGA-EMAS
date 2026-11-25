@@ -21,7 +21,7 @@ interface AttendanceModalProps {
 }
 
 export function AttendanceModal({ mode, onClose, onSuccess }: AttendanceModalProps) {
-  const { currentUser, wibNow, recordClockIn, recordClockOut } = useHris();
+  const { currentUser, wibNow, recordClockIn, recordClockOut, currentLeaveToday } = useHris();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -157,6 +157,12 @@ export function AttendanceModal({ mode, onClose, onSuccess }: AttendanceModalPro
 
   const handleConfirm = async () => {
     setError(null);
+    if (currentLeaveToday) {
+      setError(
+        `Absensi diblokir: Anda sedang ${currentLeaveToday.type} yang disetujui (${currentLeaveToday.startDate} s/d ${currentLeaveToday.endDate}).`
+      );
+      return;
+    }
     if (!coords) {
       setError('Lokasi GPS belum terkunci. Klik Perbarui GPS.');
       return;
@@ -191,12 +197,12 @@ export function AttendanceModal({ mode, onClose, onSuccess }: AttendanceModalPro
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+      className="modal-backdrop fixed inset-0 z-50 bg-slate-900/65 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="attendance-modal-title"
     >
-      <div className="w-full sm:max-w-xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200">
+      <div className="modal-panel w-full sm:max-w-xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-white shadow-2xl border border-slate-200">
         {/* Modal Header */}
         <div
           className={`sticky top-0 z-10 flex items-center justify-between px-5 py-4 text-white border-b-2 border-[#C69214] ${
@@ -353,7 +359,7 @@ export function AttendanceModal({ mode, onClose, onSuccess }: AttendanceModalPro
                   </button>
                   <button
                     type="button"
-                    disabled={submitting}
+                    disabled={submitting || Boolean(currentLeaveToday)}
                     onClick={handleConfirm}
                     className={`flex-1 h-11 rounded-xl text-white text-xs sm:text-sm font-extrabold shadow-md flex items-center justify-center gap-2 transition-all disabled:opacity-60 cursor-pointer ${
                       mode === 'in'
@@ -363,11 +369,13 @@ export function AttendanceModal({ mode, onClose, onSuccess }: AttendanceModalPro
                   >
                     <CheckCircle2 className="w-4 h-4" />
                     <span>
-                      {submitting
-                        ? 'Menyimpan...'
-                        : mode === 'in'
-                          ? 'Kirim Absen Masuk'
-                          : 'Kirim Absen Pulang'}
+                      {currentLeaveToday
+                        ? 'Sedang Izin/Cuti — Diblokir'
+                        : submitting
+                          ? 'Menyimpan...'
+                          : mode === 'in'
+                            ? 'Kirim Absen Masuk'
+                            : 'Kirim Absen Pulang'}
                     </span>
                   </button>
                 </div>

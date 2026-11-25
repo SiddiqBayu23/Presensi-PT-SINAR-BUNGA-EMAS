@@ -18,26 +18,28 @@ import {
   User,
   X,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
+import { useHris } from '../../context/HrisContext';
 import type {
   AttendanceRecord,
   DocumentSubTab,
   MainTab,
   SubmissionSubTab,
-} from '../types/hris';
-import { buildAttendanceCsvWithBom, downloadTextFile } from '../utils/exportUtils';
+} from '../../types/hris';
+import { EXCEL_MIME, buildAttendanceExcel, downloadTextFile } from '../../utils/exportUtils';
 import {
-  SHIFT_TEMPLATES,
+  effectiveShiftForDate,
   formatDuration,
   formatIndonesianDateFromIso,
-} from '../utils/hrisLogic';
+  formatRupiah,
+} from '../../utils/hrisLogic';
+import { DashboardCalendar } from '../../shared/DashboardCalendar';
+import { TodoListWidget } from '../../shared/TodoListWidget';
 
 interface DashboardHomeProps {
   onOpenAttendance: (mode: 'in' | 'out') => void;
   onNavigateTab: (tab: MainTab) => void;
   onNavigateSubmission: (sub: SubmissionSubTab) => void;
   onNavigateDocument: (sub: DocumentSubTab) => void;
-  onOpenExportAll?: () => void;
 }
 
 export function DashboardHome({
@@ -45,9 +47,17 @@ export function DashboardHome({
   onNavigateTab,
   onNavigateSubmission,
   onNavigateDocument,
-  onOpenExportAll,
 }: DashboardHomeProps) {
-  const { currentUser, attendance, leaves, overtimes, localPhotos, wibNow } = useHris();
+  const {
+    currentUser,
+    attendance,
+    leaves,
+    overtimes,
+    localPhotos,
+    wibNow,
+    schedules,
+    shiftTemplateFor,
+  } = useHris();
   const [refreshing, setRefreshing] = useState(false);
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [previewRecord, setPreviewRecord] = useState<AttendanceRecord | null>(null);
@@ -64,7 +74,14 @@ export function DashboardHome({
 
   if (!currentUser) return null;
 
-  const shiftInfo = SHIFT_TEMPLATES[currentUser.shiftCode] ?? SHIFT_TEMPLATES.REGULER;
+  // Shift hari ini mengikuti jadwal penugasan/tukar shift yang disetujui bila ada.
+  const todayShiftCode = effectiveShiftForDate(
+    currentUser.uid,
+    wibNow.isoDate,
+    schedules,
+    currentUser.shiftCode
+  );
+  const shiftInfo = shiftTemplateFor(todayShiftCode, currentUser.division);
   const myPendingRequests =
     leaves.filter((l) => l.uid === currentUser.uid && l.status === 'Menunggu').length +
     overtimes.filter((o) => o.uid === currentUser.uid && o.status === 'Menunggu').length;
@@ -75,9 +92,9 @@ export function DashboardHome({
   };
 
   const handleExportMyAttendance = () => {
-    const file = `absensi-${currentUser.nik.toLowerCase()}-${wibNow.isoDate}.csv`;
-    downloadTextFile(file, buildAttendanceCsvWithBom(myAttendance), 'text/csv;charset=utf-8;');
-    setExportNotice(`CSV riwayat absensi (${myAttendance.length} baris) diunduh: ${file}`);
+    const file = `absensi-${currentUser.nik.toLowerCase()}-${wibNow.isoDate}.xls`;
+    downloadTextFile(file, buildAttendanceExcel(myAttendance), EXCEL_MIME);
+    setExportNotice(`Excel riwayat absensi (${myAttendance.length} baris) diunduh: ${file}`);
     window.setTimeout(() => setExportNotice(null), 3200);
   };
 
@@ -149,7 +166,8 @@ export function DashboardHome({
   const previewPhotos = previewRecord ? localPhotos[previewRecord.id] : undefined;
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5 items-start">
+    <div className="space-y-5">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:gap-5 items-start">
       {/* Left Column on Desktop (Full Width on Mobile): Live Clock + Riwayat Absensi */}
       <div className="lg:col-span-7 space-y-4 lg:space-y-5">
         {/* Live Clock & Clock-In/Out Card */}
@@ -285,11 +303,11 @@ export function DashboardHome({
               <button
                 type="button"
                 onClick={handleExportMyAttendance}
-                aria-label="Export CSV Riwayat Absensi"
+                aria-label="Export Excel Riwayat Absensi"
                 className="inline-flex items-center gap-1.5 rounded-xl bg-[#EEF3FA] hover:bg-[#DDE7F6] text-[#0B2453] px-3 py-2 text-xs font-extrabold transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>Export CSV</span>
+                <span>Export Excel</span>
               </button>
               <button
                 type="button"
@@ -485,21 +503,17 @@ export function DashboardHome({
               </span>
             </div>
           </div>
-
-          {currentUser.role === 'hrd' && onOpenExportAll && (
-            <button
-              type="button"
-              onClick={onOpenExportAll}
-              className="w-full h-11 rounded-2xl bg-gradient-to-r from-[#0B2453] to-[#163A7A] hover:brightness-110 text-white text-xs font-extrabold inline-flex items-center justify-center gap-2 shadow-sm cursor-pointer transition-all"
-            >
-              <FileSpreadsheet className="w-4 h-4 text-[#F3CA62]" />
-              <span>Export Semua Hasil (Excel / CSV / PDF)</span>
-            </button>
-          )}
         </section>
       </div>
+    </div>
 
-      {/* Watermark Photo Lightbox */}
+    {/* Todo List & Penugasan Karyawan */}
+    <TodoListWidget role="employee" />
+
+    {/* Kalender Kerja Karyawan */}
+    <DashboardCalendar role="employee" />
+
+    {/* Watermark Photo Lightbox */}
       {previewRecord && previewPhotos && (
         <div
           className="fixed inset-0 z-50 bg-slate-900/75 backdrop-blur-xs flex items-center justify-center p-4"

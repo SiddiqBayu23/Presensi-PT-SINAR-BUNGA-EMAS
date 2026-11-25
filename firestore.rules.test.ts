@@ -78,3 +78,48 @@ test('Dirty Dozen #7, #8, #9, #10, #11, #12: Consistency, terminal locks, ID reg
   // Array guarding on checklist
   assert.match(rulesText, /data\.checklist is list && data\.checklist\.size\(\) >= 1 && data\.checklist\.size\(\) <= 10/);
 });
+
+test('3-role supervisor routing: validasi atasan, tier review, dan batas payroll', () => {
+  // Whitelist 3 peran; HRD wajib berada di divisi HRD.
+  assert.match(rulesText, /data\.role in \['hrd', 'supervisor', 'employee'\]/);
+  assert.match(rulesText, /data\.role != 'hrd' \|\| data\.division == 'HRD'/);
+
+  // supervisorUid harus supervisor aktif di divisi yang sama (get()/exists() hanya di create/update).
+  assert.match(rulesText, /function isValidSupervisorAssignment\(data\)/);
+  assert.match(rulesText, /\.data\.role == 'supervisor' &&/);
+  const assignmentChecks = rulesText.match(/isValidSupervisorAssignment\(incoming\(\)\)/g) ?? [];
+  assert.ok(
+    assignmentChecks.length >= 4,
+    `Empat koleksi pengajuan wajib memvalidasi supervisorUid saat create/update (ditemukan ${assignmentChecks.length})`
+  );
+
+  // Tier update supervisor (4 koleksi) + jalur get (4 koleksi) yang dirutekan ke dirinya.
+  const updateTiers = rulesText.match(/routedToSupervisor\(existing\(\)\)\s*&&/g) ?? [];
+  assert.equal(updateTiers.length, 4);
+  // Jalur baca: 4 allow get via routedToSupervisor() + 6 allow list via field supervisorUid
+  // (employees, attendance, dan 4 koleksi pengajuan).
+  const getPaths = rulesText.match(/routedToSupervisor\(existing\(\)\)\s*\);/g) ?? [];
+  assert.equal(getPaths.length, 4);
+  const listPaths = rulesText.match(/resource\.data\.supervisorUid == request\.auth\.uid/g) ?? [];
+  assert.equal(listPaths.length, 6);
+
+  // Absen masuk memaku supervisorUid ke atasan pada profil karyawan sendiri.
+  assert.match(
+    rulesText,
+    /incoming\(\)\.get\('supervisorUid', ''\) == get\(\/databases\/\$\(database\)\/documents\/employees\/\$\(request\.auth\.uid\)\)\.data\.get\('supervisorUid', ''\)/
+  );
+
+
+
+
+  // Supervisor tidak boleh menyetujui pengajuannya sendiri.
+  assert.match(rulesText, /existing\(\)\.uid != request\.auth\.uid/);
+
+  // Supervisor hanya boleh menurunkan kuota cuti & mengubah shift bawahan — bukan payroll/role.
+  assert.match(rulesText, /function isSupervisor\(\)/);
+  assert.match(rulesText, /incoming\(\)\.leaveQuota <= existing\(\)\.leaveQuota/);
+  assert.match(
+    rulesText,
+    /isSupervisor\(\)\s*&&\s*existing\(\)\.get\('supervisorUid', ''\) == request\.auth\.uid/
+  );
+});

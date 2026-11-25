@@ -10,16 +10,16 @@ import type {
   ShiftSwapRequest,
 } from '../types/hris';
 import {
-  buildAttendanceCsvWithBom,
-  buildEmployeesCsv,
+  buildAttendanceExcel,
+  buildEmployeesExcel,
   buildExcelWorkbookXml,
-  buildExitClearancesCsv,
+  buildExitClearancesExcel,
   buildFullJsonExport,
-  buildLeavesCsv,
-  buildOvertimesCsv,
-  buildPayrollRecapCsv,
-  buildSchedulesCsv,
-  buildShiftSwapsCsv,
+  buildLeavesExcel,
+  buildOvertimesExcel,
+  buildPayrollRecapExcel,
+  buildSchedulesExcel,
+  buildShiftSwapsExcel,
   type FullExportDataset,
 } from './exportUtils';
 
@@ -199,42 +199,64 @@ const sampleDataset: FullExportDataset = {
   schedules: sampleSchedules,
 };
 
-test('CSV builders include UTF-8 BOM and exclude QR/PIN fields', () => {
-  const empCsv = buildEmployeesCsv(sampleEmployees);
-  assert.ok(empCsv.startsWith('\uFEFF'), 'Employee CSV must start with UTF-8 BOM');
-  assert.ok(empCsv.includes('ADMIN01'));
-  assert.ok(empCsv.includes('budi@sinarbungamas.co.id'));
-  assert.equal(empCsv.toLowerCase().includes('qr'), false);
+test('per-table Excel builders emit single-sheet SpreadsheetML without QR/PIN fields', () => {
+  const empXls = buildEmployeesExcel(sampleEmployees);
+  assert.ok(empXls.startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
+  assert.ok(empXls.includes('<?mso-application progid="Excel.Sheet"?>'));
+  assert.ok(empXls.includes('<Worksheet ss:Name="Karyawan">'));
+  assert.equal(empXls.match(/<Worksheet /g)?.length, 1, 'Employee export must hold exactly 1 sheet');
+  assert.ok(empXls.includes('SEC-0001'));
+  assert.ok(empXls.includes('budi@sinarbungamas.co.id'));
+  assert.ok(empXls.includes('<Data ss:Type="Number">5400000</Data>'), 'Salary must stay numeric');
+  assert.equal(empXls.toLowerCase().includes('qr'), false);
 
-  const attCsv = buildAttendanceCsvWithBom(sampleAttendance);
-  assert.ok(attCsv.startsWith('\uFEFF'));
-  assert.ok(attCsv.includes('Kantor Pusat SBM'));
-  assert.equal(attCsv.toLowerCase().includes('qr'), false);
+  const attXls = buildAttendanceExcel(sampleAttendance);
+  assert.ok(attXls.includes('<Worksheet ss:Name="Absensi">'));
+  assert.ok(attXls.includes('Kantor Pusat SBM'));
+  assert.ok(attXls.includes('Terverifikasi'));
+  assert.ok(attXls.includes('-6.20876'), 'GPS coordinates must be exported');
+  assert.equal(attXls.toLowerCase().includes('qr'), false);
 
-  const leaveCsv = buildLeavesCsv(sampleLeaves);
-  assert.ok(leaveCsv.includes('Cuti Tahunan'));
+  const leaveXls = buildLeavesExcel(sampleLeaves);
+  assert.ok(leaveXls.includes('<Worksheet ss:Name="Izin dan Cuti">'));
+  assert.ok(leaveXls.includes('Cuti Tahunan'));
 
-  const otCsv = buildOvertimesCsv(sampleOvertimes);
-  assert.ok(otCsv.includes('SEC-0001'));
+  const otXls = buildOvertimesExcel(sampleOvertimes);
+  assert.ok(otXls.includes('<Worksheet ss:Name="Lembur">'));
+  assert.ok(otXls.includes('<Data ss:Type="Number">140462</Data>'));
 
-  const swapCsv = buildShiftSwapsCsv(sampleShiftSwaps);
-  assert.ok(swapCsv.includes('PAGI'));
+  const swapXls = buildShiftSwapsExcel(sampleShiftSwaps);
+  assert.ok(swapXls.includes('<Worksheet ss:Name="Tukar Shift">'));
+  assert.ok(swapXls.includes('SIANG'));
 
-  const exitCsv = buildExitClearancesCsv(sampleExits);
-  assert.ok(exitCsv.includes('2/4'));
+  const exitXls = buildExitClearancesExcel(sampleExits);
+  assert.ok(exitXls.includes('<Worksheet ss:Name="Exit Clearance">'));
+  assert.ok(exitXls.includes('2/4'));
 
-  const schCsv = buildSchedulesCsv(sampleSchedules);
-  assert.ok(schCsv.includes('Kantor Pusat SBM'));
+  const schXls = buildSchedulesExcel(sampleSchedules);
+  assert.ok(schXls.includes('<Worksheet ss:Name="Jadwal">'));
+  assert.ok(schXls.includes('Jaga lobby depan'));
 
-  const payrollCsv = buildPayrollRecapCsv(
+  const payrollXls = buildPayrollRecapExcel(
     sampleEmployees,
     '2026-11',
     'November 2026',
     sampleAttendance,
     sampleOvertimes
   );
-  assert.ok(payrollCsv.includes('Take Home Pay'));
-  assert.ok(payrollCsv.includes('HRD Administrator'));
+  assert.ok(payrollXls.includes('<Worksheet ss:Name="Rekap Gaji">'));
+  assert.ok(payrollXls.includes('Take Home Pay'));
+  assert.ok(payrollXls.includes('HRD Administrator'));
+});
+
+test('every Excel export escapes XML control characters in free text', () => {
+  const tricky = {
+    ...sampleLeaves[0],
+    reason: 'Izin <mendesak> & "penting"',
+  };
+  const xml = buildLeavesExcel([tricky]);
+  assert.ok(xml.includes('Izin &lt;mendesak&gt; &amp; &quot;penting&quot;'));
+  assert.equal(xml.includes('<mendesak>'), false);
 });
 
 test('buildExcelWorkbookXml generates valid 7-sheet SpreadsheetML workbook without QR sheet', () => {

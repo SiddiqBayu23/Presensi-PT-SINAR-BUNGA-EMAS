@@ -12,22 +12,23 @@ import {
   Timer,
   Users,
 } from 'lucide-react';
-import { useHris } from '../context/HrisContext';
+import { useHris } from '../../context/HrisContext';
 import {
-  buildAttendanceCsvWithBom,
-  buildEmployeesCsv,
+  EXCEL_MIME,
+  buildAttendanceExcel,
+  buildEmployeesExcel,
   buildExcelWorkbookXml,
-  buildExitClearancesCsv,
+  buildExitClearancesExcel,
   buildFullJsonExport,
-  buildLeavesCsv,
-  buildOvertimesCsv,
-  buildPayrollRecapCsv,
-  buildSchedulesCsv,
-  buildShiftSwapsCsv,
+  buildLeavesExcel,
+  buildOvertimesExcel,
+  buildPayrollRecapExcel,
+  buildSchedulesExcel,
+  buildShiftSwapsExcel,
   downloadTextFile,
   type FullExportDataset,
-} from '../utils/exportUtils';
-import { calculatePayslip, formatRupiah } from '../utils/hrisLogic';
+} from '../../utils/exportUtils';
+import { calculatePayslip, formatRupiah } from '../../utils/hrisLogic';
 
 interface ExportAllPanelProps {
   scope: 'all' | 'self';
@@ -50,6 +51,8 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
     shiftSwaps,
     exitClearances,
     schedules,
+    payslipComponents,
+    payrollSettings,
     wibNow,
   } = useHris();
 
@@ -90,9 +93,13 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       shiftSwaps: scopedShiftSwaps,
       exitClearances: scopedExits,
       schedules: scopedSchedules,
+      payslipComponents,
+      payrollSettings,
     };
   }, [
     attendance,
+    payslipComponents,
+    payrollSettings,
     currentUser,
     employees,
     exitClearances,
@@ -116,10 +123,12 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
           dataset.periodKey,
           dataset.periodLabel,
           dataset.attendance,
-          dataset.overtimes
+          dataset.overtimes,
+          payslipComponents,
+          payrollSettings
         ),
       })),
-    [dataset]
+    [dataset, payslipComponents, payrollSettings]
   );
 
   const notify = (msg: string) => {
@@ -133,7 +142,7 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
   const handleExportAllExcel = () => {
     const xml = buildExcelWorkbookXml(dataset);
     const filename = `${prefix}-laporan-lengkap-${wibNow.isoDate}.xls`;
-    downloadTextFile(filename, xml, 'application/vnd.ms-excel;charset=utf-8;');
+    downloadTextFile(filename, xml, EXCEL_MIME);
     notify(`Berhasil export semua hasil ke Excel (${filename} • 7 sheet).`);
   };
 
@@ -164,13 +173,9 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Jam masuk/pulang, GPS, verifikasi kamera live, dan status keterlambatan',
       icon: <ClipboardCheck className="w-4 h-4 text-[#0B2453]" />,
       onExport: () => {
-        const file = `${prefix}-absensi-${wibNow.isoDate}.csv`;
-        downloadTextFile(
-          file,
-          buildAttendanceCsvWithBom(dataset.attendance),
-          'text/csv;charset=utf-8;'
-        );
-        notify(`CSV Rekap Absensi diunduh (${file}).`);
+        const file = `${prefix}-absensi-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildAttendanceExcel(dataset.attendance), EXCEL_MIME);
+        notify(`Excel Rekap Absensi diunduh (${file}).`);
       },
     },
     {
@@ -180,19 +185,21 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Gaji pokok, tunjangan, lembur disetujui, BPJS, potongan, Take Home Pay',
       icon: <Banknote className="w-4 h-4 text-emerald-700" />,
       onExport: () => {
-        const file = `${prefix}-payroll-${period.key}.csv`;
+        const file = `${prefix}-payroll-${period.key}.xls`;
         downloadTextFile(
           file,
-          buildPayrollRecapCsv(
+          buildPayrollRecapExcel(
             dataset.employees,
             dataset.periodKey,
             dataset.periodLabel,
             dataset.attendance,
-            dataset.overtimes
+            dataset.overtimes,
+            payslipComponents,
+            payrollSettings
           ),
-          'text/csv;charset=utf-8;'
+          EXCEL_MIME
         );
-        notify(`CSV Rekap Gaji ${period.label} diunduh (${file}).`);
+        notify(`Excel Rekap Gaji ${period.label} diunduh (${file}).`);
       },
     },
     {
@@ -202,9 +209,9 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'NIK, email akun, jabatan, divisi, shift, kontrak PKO/PKWT, dan sisa cuti',
       icon: <Users className="w-4 h-4 text-[#0B2453]" />,
       onExport: () => {
-        const file = `${prefix}-karyawan-${wibNow.isoDate}.csv`;
-        downloadTextFile(file, buildEmployeesCsv(dataset.employees), 'text/csv;charset=utf-8;');
-        notify(`CSV Data Karyawan diunduh (${file}).`);
+        const file = `${prefix}-karyawan-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildEmployeesExcel(dataset.employees), EXCEL_MIME);
+        notify(`Excel Data Karyawan diunduh (${file}).`);
       },
     },
     {
@@ -214,9 +221,9 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Cuti tahunan, izin sakit, rentang tanggal, alasan, dan status approval',
       icon: <FileText className="w-4 h-4 text-sky-700" />,
       onExport: () => {
-        const file = `${prefix}-izin-cuti-${wibNow.isoDate}.csv`;
-        downloadTextFile(file, buildLeavesCsv(dataset.leaves), 'text/csv;charset=utf-8;');
-        notify(`CSV Izin & Cuti diunduh (${file}).`);
+        const file = `${prefix}-izin-cuti-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildLeavesExcel(dataset.leaves), EXCEL_MIME);
+        notify(`Excel Izin & Cuti diunduh (${file}).`);
       },
     },
     {
@@ -226,9 +233,9 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Tanggal, jam lembur, durasi, estimasi insentif Rp, dan status',
       icon: <Timer className="w-4 h-4 text-indigo-700" />,
       onExport: () => {
-        const file = `${prefix}-lembur-${wibNow.isoDate}.csv`;
-        downloadTextFile(file, buildOvertimesCsv(dataset.overtimes), 'text/csv;charset=utf-8;');
-        notify(`CSV Lembur diunduh (${file}).`);
+        const file = `${prefix}-lembur-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildOvertimesExcel(dataset.overtimes), EXCEL_MIME);
+        notify(`Excel Lembur diunduh (${file}).`);
       },
     },
     {
@@ -238,11 +245,11 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Riwayat pengajuan tukar shift dan jadwal penugasan harian',
       icon: <CalendarDays className="w-4 h-4 text-amber-700" />,
       onExport: () => {
-        const file = `${prefix}-tukar-shift-${wibNow.isoDate}.csv`;
-        downloadTextFile(file, buildShiftSwapsCsv(dataset.shiftSwaps), 'text/csv;charset=utf-8;');
-        const schFile = `${prefix}-jadwal-${wibNow.isoDate}.csv`;
-        downloadTextFile(schFile, buildSchedulesCsv(dataset.schedules), 'text/csv;charset=utf-8;');
-        notify(`CSV Tukar Shift & Jadwal diunduh.`);
+        const file = `${prefix}-tukar-shift-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildShiftSwapsExcel(dataset.shiftSwaps), EXCEL_MIME);
+        const schFile = `${prefix}-jadwal-${wibNow.isoDate}.xls`;
+        downloadTextFile(schFile, buildSchedulesExcel(dataset.schedules), EXCEL_MIME);
+        notify(`Excel Tukar Shift & Jadwal diunduh.`);
       },
     },
     {
@@ -252,13 +259,9 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       description: 'Tanggal kerja terakhir, progres checklist departemen, dan status final',
       icon: <FileText className="w-4 h-4 text-rose-700" />,
       onExport: () => {
-        const file = `${prefix}-exit-clearance-${wibNow.isoDate}.csv`;
-        downloadTextFile(
-          file,
-          buildExitClearancesCsv(dataset.exitClearances),
-          'text/csv;charset=utf-8;'
-        );
-        notify(`CSV Exit Clearance diunduh (${file}).`);
+        const file = `${prefix}-exit-clearance-${wibNow.isoDate}.xls`;
+        downloadTextFile(file, buildExitClearancesExcel(dataset.exitClearances), EXCEL_MIME);
+        notify(`Excel Exit Clearance diunduh (${file}).`);
       },
     },
   ];
@@ -353,16 +356,16 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
         )}
       </section>
 
-      {/* Per-Module Individual CSV Exports */}
+      {/* Per-Module Individual Excel Exports */}
       <section
-        aria-label="Export CSV Per Modul"
+        aria-label="Export Excel Per Modul"
         className="no-print rounded-3xl bg-white p-5 sm:p-6 shadow-xs border border-slate-200/80 space-y-4"
       >
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm sm:text-base font-extrabold text-[#0B2453]">
-            Export CSV Per Kategori
+            Export Excel Per Kategori
           </h3>
-          <span className="text-xs text-slate-500">UTF-8 Excel Ready</span>
+          <span className="text-xs text-slate-500">SpreadsheetML &bull; .xls</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -388,12 +391,12 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
 
               <button
                 type="button"
-                aria-label={`Unduh CSV ${mod.title}`}
+                aria-label={`Unduh Excel ${mod.title}`}
                 onClick={mod.onExport}
                 className="shrink-0 h-9 px-3 rounded-xl bg-white hover:bg-[#0B2453] hover:text-white border border-slate-200 text-[#0B2453] text-xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>CSV</span>
+                <span>Excel</span>
               </button>
             </div>
           ))}
