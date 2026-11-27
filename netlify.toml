@@ -1,0 +1,5 @@
+[build]
+  # Install dependencies as part of the build so the Vite CLI is always available,
+  # even in build environments that skip the automatic install step.
+  command = "npm install --no-audit --no-fund && npm run build"
+  publish = "dist"
