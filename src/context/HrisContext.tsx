@@ -36,6 +36,13 @@ import {
   setEmployeeActiveAccount,
 } from '../firebase';
 import { EDUCATION_LEVELS, GENDERS, MARITAL_STATUSES } from '../types/hris';
+import {
+  deleteFromGoogleDrive,
+  extractDriveFileId,
+  isDriveStorageConfigured,
+  isDriveUrl,
+  uploadToGoogleDrive,
+} from '../utils/driveStorage';
 import type {
   ApprovalStatus,
   AttendanceRecord,
@@ -336,6 +343,16 @@ interface HrisContextValue {
   deleteTodoTasks: (
     taskIds: readonly string[]
   ) => Promise<{ ok: boolean; error?: string; deleted: number }>;
+  /** Pindahkan foto & dokumen lama (Base64 di Firestore/lokal) ke Google Drive. */
+  migrateExistingMediaToDrive: (
+    onProgress?: (status: string) => void
+  ) => Promise<{
+    ok: boolean;
+    migrated: number;
+    skipped: number;
+    failed: number;
+    error?: string;
+  }>;
   // Divisi management
   divisions: string[];
   addDivision: (name: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1228,10 +1245,41 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       }
     }
     if (updates.photoUrl !== undefined) {
-      // Hanya terima data URL gambar (hasil crop kanvas); tolak skema lain demi keamanan.
       const value = updates.photoUrl;
-      cleanUpdates.photoUrl =
-        value.startsWith('data:image/') && value.length <= 400000 ? value : '';
+      const existingEmp = employees.find((e) => e.uid === uid);
+      const oldDriveId = extractDriveFileId(existingEmp?.photoUrl);
+      if (value === '') {
+        cleanUpdates.photoUrl = '';
+        if (oldDriveId && isDriveStorageConfigured()) {
+          void deleteFromGoogleDrive(oldDriveId);
+        }
+      } else if (isDriveUrl(value)) {
+        cleanUpdates.photoUrl = value;
+      } else if (value.startsWith('data:image/')) {
+        if (isDriveStorageConfigured()) {
+          try {
+            const nik = existingEmp?.nik || uid;
+            const uploaded = await uploadToGoogleDrive({
+              category: 'PROFILE',
+              fileName: `${nik}_${uid}_profil.jpg`,
+              base64Data: value,
+              mimeType: 'image/jpeg',
+              uid,
+              refTab: '01_Employees',
+              refId: uid,
+              replaceFileId: oldDriveId,
+            });
+            cleanUpdates.photoUrl = uploaded.imageUrl;
+          } catch (err) {
+            console.warn('Upload foto profil ke Google Drive gagal, fallback ke Firestore:', err);
+            cleanUpdates.photoUrl = value.length <= 400000 ? value : '';
+          }
+        } else {
+          cleanUpdates.photoUrl = value.length <= 400000 ? value : '';
+        }
+      } else {
+        cleanUpdates.photoUrl = '';
+      }
     }
     if (updates.ktpNumber !== undefined) cleanPersonal.ktpNumber = sanitizeSixteenDigits(updates.ktpNumber);
     if (updates.kkNumber !== undefined) cleanPersonal.kkNumber = sanitizeSixteenDigits(updates.kkNumber);
@@ -1294,6 +1342,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     const nextDivision = updates.division ?? target?.division;
     const nextShift = updates.shiftCode ?? target?.shiftCode;
     if (
+      (updates.division !== undefined || updates.shiftCode !== undefined) &&
       target &&
       nextDivision &&
       nextShift &&
@@ -1403,24 +1452,54 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     kind,
     dataUrl
   ) => {
-    if (!dataUrl.startsWith('data:image/jpeg;base64,') || dataUrl.length > EMPLOYEE_DOC_MAX_CHARS) {
+    const isJpegDataUrl = dataUrl.startsWith('data:image/jpeg;base64,');
+    if (!isJpegDataUrl && !isDriveUrl(dataUrl)) {
+      throw new Error('Dokumen harus berupa JPEG terkompresi atau tautan Google Drive.');
+    }
+
+    let finalUrl = dataUrl;
+    const oldDriveId = extractDriveFileId(employeeDocuments[uid]?.[kind]);
+
+    if (isJpegDataUrl && isDriveStorageConfigured()) {
+      try {
+        const emp = employees.find((e) => e.uid === uid);
+        const nik = emp?.nik || uid;
+        const uploaded = await uploadToGoogleDrive({
+          category: kind === 'ktp' ? 'KTP' : 'KK',
+          fileName: `${nik}_${kind}_${uid}.jpg`,
+          base64Data: dataUrl,
+          mimeType: 'image/jpeg',
+          uid,
+          refTab: '03_EmployeeDocuments',
+          refId: `${uid}_${kind}`,
+          replaceFileId: oldDriveId,
+        });
+        finalUrl = uploaded.imageUrl;
+      } catch (err) {
+        console.warn('Upload dokumen karyawan ke Google Drive gagal, fallback ke Firestore:', err);
+        if (dataUrl.length > EMPLOYEE_DOC_MAX_CHARS) {
+          throw new Error('Dokumen harus berupa JPEG terkompresi di bawah 640 KB.');
+        }
+      }
+    } else if (isJpegDataUrl && dataUrl.length > EMPLOYEE_DOC_MAX_CHARS) {
       throw new Error('Dokumen harus berupa JPEG terkompresi di bawah 640 KB.');
     }
+
     if (!isFirebaseSynced) {
-      applyEmployeeDocument(uid, kind, dataUrl);
+      applyEmployeeDocument(uid, kind, finalUrl);
       return;
     }
     const documentId = `${uid}_${kind}`;
     try {
-      // Satu dokumen per (karyawan, jenis): unggah ulang menimpa gambar lama tanpa riwayat.
+      // Satu dokumen per (karyawan, jenis): unggah ulang menimpa gambar/tautan lama tanpa riwayat.
       await setDoc(doc(db, 'employeeDocuments', documentId), {
         uid,
         kind,
-        dataUrl,
+        dataUrl: finalUrl,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      applyEmployeeDocument(uid, kind, dataUrl);
+      applyEmployeeDocument(uid, kind, finalUrl);
     } catch (err) {
       handleFirestoreError(err, OperationType.UPDATE, `employeeDocuments/${documentId}`);
     }
@@ -1430,6 +1509,10 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     uid,
     kind
   ) => {
+    const oldDriveId = extractDriveFileId(employeeDocuments[uid]?.[kind]);
+    if (oldDriveId && isDriveStorageConfigured()) {
+      void deleteFromGoogleDrive(oldDriveId);
+    }
     if (!isFirebaseSynced) {
       applyEmployeeDocument(uid, kind, null);
       return;
@@ -1531,8 +1614,30 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
       return { ok: true, record };
     }
 
-    // Foto dikompres lebih dulu agar bisa ikut tersimpan di dokumen absensi.
-    const photoInUrl = payload.photoDataUrl ? await photoForFirestore(payload.photoDataUrl) : '';
+    // Unggah foto absensi ke Google Drive bila terkonfigurasi, dengan fallback kompresi Firestore.
+    let photoInUrl = '';
+    if (payload.photoDataUrl) {
+      if (isDriveStorageConfigured()) {
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'CLOCK_IN',
+            fileName: `${nowWib.isoDate}_${currentUser.nik}_IN.jpg`,
+            base64Data: payload.photoDataUrl,
+            mimeType: 'image/jpeg',
+            uid: currentUser.uid,
+            refTab: '07_Attendance',
+            refId: id,
+            monthKey: nowWib.periodKey,
+          });
+          photoInUrl = uploaded.imageUrl;
+        } catch (err) {
+          console.warn('Upload foto absen masuk ke Google Drive gagal, fallback ke Firestore:', err);
+          photoInUrl = await photoForFirestore(payload.photoDataUrl);
+        }
+      } else {
+        photoInUrl = await photoForFirestore(payload.photoDataUrl);
+      }
+    }
 
     const {
       id: _docId,
@@ -1602,9 +1707,29 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     }
 
     const path = `attendance/${existingToday.id}`;
-    const photoOutUrl = payload.photoDataUrl
-      ? await photoForFirestore(payload.photoDataUrl)
-      : existingToday.clockOutPhotoUrl ?? '';
+    let photoOutUrl = existingToday.clockOutPhotoUrl ?? '';
+    if (payload.photoDataUrl) {
+      if (isDriveStorageConfigured()) {
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'CLOCK_OUT',
+            fileName: `${nowWib.isoDate}_${currentUser.nik}_OUT.jpg`,
+            base64Data: payload.photoDataUrl,
+            mimeType: 'image/jpeg',
+            uid: currentUser.uid,
+            refTab: '07_Attendance',
+            refId: existingToday.id,
+            monthKey: nowWib.periodKey,
+          });
+          photoOutUrl = uploaded.imageUrl;
+        } catch (err) {
+          console.warn('Upload foto absen pulang ke Google Drive gagal, fallback ke Firestore:', err);
+          photoOutUrl = await photoForFirestore(payload.photoDataUrl);
+        }
+      } else {
+        photoOutUrl = await photoForFirestore(payload.photoDataUrl);
+      }
+    }
     try {
       await updateDoc(doc(db, 'attendance', existingToday.id), {
         clockOutTime: updatedRecord.clockOutTime,
@@ -3135,6 +3260,44 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
   // Karyawan Mengirim Laporan Todo List
   const submitTodoReport: HrisContextValue['submitTodoReport'] = async (taskId, report) => {
     const nowWib = getWibComponents(new Date());
+    let finalPhotoUrl = report.photoUrl;
+    let finalDocumentUrl = report.documentUrl;
+
+    if (isDriveStorageConfigured()) {
+      const nik = currentUser?.nik || currentUser?.uid || 'USER';
+      const uid = currentUser?.uid || '';
+      if (finalPhotoUrl && finalPhotoUrl.startsWith('data:')) {
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'TODO_PHOTO',
+            fileName: `${taskId}_${nik}_${report.photoName || 'foto.jpg'}`,
+            base64Data: finalPhotoUrl,
+            uid,
+            refTab: '13_TodoTasks',
+            refId: taskId,
+          });
+          finalPhotoUrl = uploaded.imageUrl;
+        } catch (err) {
+          console.warn('Upload foto tugas ke Google Drive gagal, memakai data lokal:', err);
+        }
+      }
+      if (finalDocumentUrl && finalDocumentUrl.startsWith('data:')) {
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'TODO_DOC',
+            fileName: `${taskId}_${nik}_${report.documentName || 'dokumen'}`,
+            base64Data: finalDocumentUrl,
+            uid,
+            refTab: '13_TodoTasks',
+            refId: taskId,
+          });
+          finalDocumentUrl = uploaded.viewUrl;
+        } catch (err) {
+          console.warn('Upload dokumen tugas ke Google Drive gagal, memakai data lokal:', err);
+        }
+      }
+    }
+
     setTodos((prev) => {
       const next = prev.map((t) =>
         t.id === taskId
@@ -3143,9 +3306,9 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
               status: 'Menunggu Review' as TodoStatus,
               reportText: report.text ?? t.reportText,
               reportPhotoName: report.photoName ?? t.reportPhotoName,
-              reportPhotoUrl: report.photoUrl ?? t.reportPhotoUrl,
+              reportPhotoUrl: finalPhotoUrl ?? t.reportPhotoUrl,
               reportDocumentName: report.documentName ?? t.reportDocumentName,
-              reportDocumentUrl: report.documentUrl ?? t.reportDocumentUrl,
+              reportDocumentUrl: finalDocumentUrl ?? t.reportDocumentUrl,
               submittedAt: `${nowWib.isoDate} ${nowWib.timeShort} WIB`,
             }
           : t
@@ -3213,6 +3376,213 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     });
     return { ok: true, deleted: targets.length };
   };
+
+  const migrateExistingMediaToDrive: HrisContextValue['migrateExistingMediaToDrive'] = async (
+    onProgress
+  ) => {
+    if (!currentUser || currentUser.role !== 'hrd') {
+      return { ok: false, migrated: 0, skipped: 0, failed: 0, error: 'Hanya Admin HRD yang dapat menjalankan migrasi.' };
+    }
+    if (!isDriveStorageConfigured()) {
+      return { ok: false, migrated: 0, skipped: 0, failed: 0, error: 'VITE_DRIVE_WEBAPP_URL belum dikonfigurasi.' };
+    }
+
+    let migrated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    // 1. Foto Profil Karyawan
+    for (const emp of employees) {
+      if (!emp.photoUrl) continue;
+      if (!emp.photoUrl.startsWith('data:image/')) {
+        skipped++;
+        continue;
+      }
+      onProgress?.(`Mengunggah foto profil ${emp.name}...`);
+      try {
+        const uploaded = await uploadToGoogleDrive({
+          category: 'PROFILE',
+          fileName: `${emp.nik || emp.uid}_${emp.uid}_profil.jpg`,
+          base64Data: emp.photoUrl,
+          mimeType: 'image/jpeg',
+          uid: emp.uid,
+          refTab: '01_Employees',
+          refId: emp.uid,
+        });
+        if (isFirebaseSynced) {
+          await updateDoc(doc(db, 'employees', emp.uid), {
+            photoUrl: uploaded.imageUrl,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          setEmployees((prev) =>
+            prev.map((e) => (e.uid === emp.uid ? { ...e, photoUrl: uploaded.imageUrl } : e))
+          );
+        }
+        migrated++;
+      } catch {
+        failed++;
+      }
+    }
+
+    // 2. Dokumen Karyawan (KTP & KK)
+    for (const [uid, kinds] of Object.entries(employeeDocuments)) {
+      const emp = employees.find((e) => e.uid === uid);
+      const nik = emp?.nik || uid;
+      for (const kind of ['ktp', 'kk'] as const) {
+        const val = kinds?.[kind];
+        if (!val) continue;
+        if (!val.startsWith('data:image/')) {
+          skipped++;
+          continue;
+        }
+        onProgress?.(`Mengunggah ${kind.toUpperCase()} ${emp?.name ?? nik}...`);
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: kind === 'ktp' ? 'KTP' : 'KK',
+            fileName: `${nik}_${kind}_${uid}.jpg`,
+            base64Data: val,
+            mimeType: 'image/jpeg',
+            uid,
+            refTab: '03_EmployeeDocuments',
+            refId: `${uid}_${kind}`,
+          });
+          if (isFirebaseSynced) {
+            await setDoc(doc(db, 'employeeDocuments', `${uid}_${kind}`), {
+              uid,
+              kind,
+              dataUrl: uploaded.imageUrl,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          }
+          applyEmployeeDocument(uid, kind, uploaded.imageUrl);
+          migrated++;
+        } catch {
+          failed++;
+        }
+      }
+    }
+
+    // 3. Foto Presensi Masuk & Pulang
+    for (const rec of attendance) {
+      const hasInData = Boolean(rec.clockInPhotoUrl?.startsWith('data:image/'));
+      const hasOutData = Boolean(rec.clockOutPhotoUrl?.startsWith('data:image/'));
+      if (!hasInData && !hasOutData) {
+        if (rec.clockInPhotoUrl || rec.clockOutPhotoUrl) skipped++;
+        continue;
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (hasInData && rec.clockInPhotoUrl) {
+        onProgress?.(`Mengunggah foto absen masuk ${rec.employeeName} (${rec.date})...`);
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'CLOCK_IN',
+            fileName: `${rec.date}_${rec.nik}_IN.jpg`,
+            base64Data: rec.clockInPhotoUrl,
+            mimeType: 'image/jpeg',
+            uid: rec.uid,
+            refTab: '07_Attendance',
+            refId: rec.id,
+            monthKey: rec.date.slice(0, 7),
+          });
+          updates.clockInPhotoUrl = uploaded.imageUrl;
+          migrated++;
+        } catch {
+          failed++;
+        }
+      }
+      if (hasOutData && rec.clockOutPhotoUrl) {
+        onProgress?.(`Mengunggah foto absen pulang ${rec.employeeName} (${rec.date})...`);
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'CLOCK_OUT',
+            fileName: `${rec.date}_${rec.nik}_OUT.jpg`,
+            base64Data: rec.clockOutPhotoUrl,
+            mimeType: 'image/jpeg',
+            uid: rec.uid,
+            refTab: '07_Attendance',
+            refId: rec.id,
+            monthKey: rec.date.slice(0, 7),
+          });
+          updates.clockOutPhotoUrl = uploaded.imageUrl;
+          migrated++;
+        } catch {
+          failed++;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        if (isFirebaseSynced) {
+          await updateDoc(doc(db, 'attendance', rec.id), {
+            ...updates,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          setAttendance((prev) =>
+            prev.map((a) => (a.id === rec.id ? { ...a, ...updates } : a))
+          );
+        }
+      }
+    }
+
+    // 4. Lampiran Tugas (Todo)
+    let todosChanged = false;
+    const nextTodos = [...todos];
+    for (let i = 0; i < nextTodos.length; i++) {
+      const t = nextTodos[i];
+      const emp = employees.find((e) => e.uid === t.assignedToUid);
+      const nik = emp?.nik || t.assignedToUid || 'USER';
+      let updatedTask = t;
+
+      if (t.reportPhotoUrl?.startsWith('data:')) {
+        onProgress?.(`Mengunggah foto tugas "${t.title}"...`);
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'TODO_PHOTO',
+            fileName: `${t.id}_${nik}_${t.reportPhotoName || 'foto.jpg'}`,
+            base64Data: t.reportPhotoUrl,
+            uid: t.assignedToUid,
+            refTab: '13_TodoTasks',
+            refId: t.id,
+          });
+          updatedTask = { ...updatedTask, reportPhotoUrl: uploaded.imageUrl };
+          todosChanged = true;
+          migrated++;
+        } catch {
+          failed++;
+        }
+      }
+      if (updatedTask.reportDocumentUrl?.startsWith('data:')) {
+        onProgress?.(`Mengunggah dokumen tugas "${t.title}"...`);
+        try {
+          const uploaded = await uploadToGoogleDrive({
+            category: 'TODO_DOC',
+            fileName: `${t.id}_${nik}_${updatedTask.reportDocumentName || 'dokumen'}`,
+            base64Data: updatedTask.reportDocumentUrl,
+            uid: updatedTask.assignedToUid,
+            refTab: '13_TodoTasks',
+            refId: t.id,
+          });
+          updatedTask = { ...updatedTask, reportDocumentUrl: uploaded.viewUrl };
+          todosChanged = true;
+          migrated++;
+        } catch {
+          failed++;
+        }
+      }
+      nextTodos[i] = updatedTask;
+    }
+
+    if (todosChanged) {
+      setTodos(nextTodos);
+      saveStoredJson(LOCAL_TODOS_KEY, nextTodos);
+    }
+
+    onProgress?.('Migrasi selesai.');
+    return { ok: true, migrated, skipped, failed };
+  };
   const value: HrisContextValue = {
     authReady,
     firebaseUser,
@@ -3262,6 +3632,7 @@ export function HrisProvider({ children }: { children: React.ReactNode }) {
     reviewExitClearance,
     todos,
     deleteTodoTasks,
+    migrateExistingMediaToDrive,
     divisions,
     addDivision,
     deleteDivision,

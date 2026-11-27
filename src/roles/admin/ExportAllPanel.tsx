@@ -29,6 +29,7 @@ import {
   type FullExportDataset,
 } from '../../utils/exportUtils';
 import { calculatePayslip, formatRupiah } from '../../utils/hrisLogic';
+import { isDriveStorageConfigured } from '../../utils/driveStorage';
 
 interface ExportAllPanelProps {
   scope: 'all' | 'self';
@@ -55,10 +56,13 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
     payrollSettings,
     userPayrollConfigs,
     wibNow,
+    migrateExistingMediaToDrive,
   } = useHris();
 
   const [period, setPeriod] = useState(EXPORT_PERIODS[0]);
   const [lastExport, setLastExport] = useState<string | null>(null);
+  const [migratingDrive, setMigratingDrive] = useState(false);
+  const [driveProgress, setDriveProgress] = useState<string | null>(null);
 
   const dataset = useMemo<FullExportDataset>(() => {
     const isSelf = scope === 'self' && currentUser;
@@ -466,6 +470,48 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
           </table>
         </div>
       </section>
+
+      {scope === 'all' && isDriveStorageConfigured() && (
+        <section className="rounded-3xl border border-amber-200/80 bg-gradient-to-br from-amber-50/70 via-white to-white p-5 sm:p-6 shadow-xs">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="text-sm sm:text-base font-extrabold text-[#0B2453]">
+                Sinkronisasi &amp; Migrasi Media Lama ke Google Drive
+              </h3>
+              <p className="mt-1 text-xs text-slate-600">
+                Memindahkan foto profil, scan KTP/KK, foto presensi, dan lampiran tugas yang masih
+                tersimpan di database lama (Base64) ke folder Google Drive PT Sinar Bunga Emas.
+              </p>
+              {driveProgress && (
+                <p className="mt-2 text-xs font-semibold text-[#0B2453]">{driveProgress}</p>
+              )}
+            </div>
+            <button
+              type="button"
+              disabled={migratingDrive}
+              onClick={async () => {
+                setMigratingDrive(true);
+                setDriveProgress('Memeriksa data foto & dokumen...');
+                try {
+                  const res = await migrateExistingMediaToDrive((msg) => setDriveProgress(msg));
+                  if (!res.ok) {
+                    setDriveProgress(res.error || 'Migrasi gagal.');
+                  } else {
+                    const summary = `Selesai: ${res.migrated} file dipindah ke Google Drive, ${res.skipped} sudah di Drive, ${res.failed} gagal.`;
+                    setDriveProgress(summary);
+                    onExportDone?.(summary);
+                  }
+                } finally {
+                  setMigratingDrive(false);
+                }
+              }}
+              className="shrink-0 rounded-xl bg-[#0B2453] px-4 py-2.5 text-xs font-bold text-white shadow-xs transition hover:bg-[#133470] disabled:opacity-60"
+            >
+              {migratingDrive ? 'Memindahkan ke Drive...' : 'Pindahkan Data Lama ke Google Drive'}
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

@@ -145,7 +145,8 @@ service cloud.firestore {
         data.kind in ['ktp', 'kk'] &&
         data.dataUrl is string &&
         data.dataUrl.size() <= 700000 &&
-        data.dataUrl.matches('^data:image/jpeg;base64,') &&
+        (data.dataUrl.matches('^data:image/jpeg;base64,') ||
+          data.dataUrl.matches('^https://(drive\\.google\\.com|lh3\\.googleusercontent\\.com)/')) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -631,7 +632,8 @@ service cloud.firestore {
             isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'clockOutTime', 'clockOutPhotoVerified', 'clockOutLat', 'clockOutLng',
-              'clockOutAddress', 'workMinutes', 'lateMinutes', 'status', 'updatedAt'
+              'clockOutAddress', 'clockInPhotoUrl', 'clockOutPhotoUrl',
+              'workMinutes', 'lateMinutes', 'status', 'updatedAt'
             ])
           ) ||
           // Tier 2: Employee Clock-Out (Terminal lock: only allowed if clockOutTime == '')

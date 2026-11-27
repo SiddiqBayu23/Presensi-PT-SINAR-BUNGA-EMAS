@@ -38,6 +38,7 @@ export function EmployeeAvatar({
         src={photoUrl}
         alt={`Foto profil ${name}`}
         loading="lazy"
+        referrerPolicy="no-referrer"
         className={`${className} shrink-0 rounded-md border border-slate-200 bg-slate-100 object-cover`}
       />
     );
