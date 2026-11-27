@@ -677,6 +677,46 @@
         "updatedAt"
       ]
     },
+    "EmployeeProfile": {
+      "title": "EmployeeProfile",
+      "description": "Private personal and payroll-administration data owned by one employee.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ktpNumber": { "type": "string", "maxLength": 16, "pattern": "^[0-9]*$" },
+        "kkNumber": { "type": "string", "maxLength": 16, "pattern": "^[0-9]*$" },
+        "fullNameKtp": { "type": "string", "maxLength": 100 },
+        "birthPlace": { "type": "string", "maxLength": 80 },
+        "birthDate": { "type": "string", "format": "date" },
+        "ktpAddress": { "type": "string", "maxLength": 240 },
+        "gender": { "type": "string", "enum": ["", "Laki-laki", "Perempuan"] },
+        "motherName": { "type": "string", "maxLength": 100 },
+        "workRegion": { "type": "string", "maxLength": 80 },
+        "maritalStatus": { "type": "string", "enum": ["", "Belum Menikah", "Menikah", "Cerai Hidup", "Cerai Mati"] },
+        "childrenCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "bankName": { "type": "string", "maxLength": 60 },
+        "bankAccountNumber": { "type": "string", "maxLength": 30, "pattern": "^[0-9]*$" },
+        "bankAccountName": { "type": "string", "maxLength": 100 },
+        "emergencyContactName": { "type": "string", "maxLength": 100 },
+        "emergencyContactPhone": { "type": "string", "maxLength": 30 },
+        "lastEducation": { "type": "string", "enum": ["", "SD", "SMP", "SMA/SMK", "D3", "S1", "S2", "S3"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "updatedAt"]
+    },
+    "EmployeeDocument": {
+      "title": "EmployeeDocument",
+      "description": "Compressed JPEG scan of an employee KTP or Kartu Keluarga.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kind": { "type": "string", "enum": ["ktp", "kk"] },
+        "dataUrl": { "type": "string", "maxLength": 700000, "pattern": "^data:image/jpeg;base64," },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "kind", "dataUrl", "createdAt", "updatedAt"]
+    },
     "ScheduleEntry": {
       "title": "ScheduleEntry",
       "description": "Assigned work schedule and task completion status per employee.",
@@ -700,8 +740,24 @@
         },
         "shiftCode": {
           "type": "string",
-          "enum": ["REGULER", "PAGI", "SIANG", "MALAM", "SECURITY24"],
-          "maxLength": 16
+          "description": "Kode shift: 5 shift bawaan atau shift buatan HRD pada katalog shift.",
+          "maxLength": 16,
+          "pattern": "^[A-Z0-9][A-Z0-9_]*[A-Z0-9]$"
+        },
+        "isBackup": {
+          "type": "boolean",
+          "description": "true = staf cadangan (backup) pada shift ini."
+        },
+        "replacedUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID staf yang digantikan saat backup aktif."
+        },
+        "replacedName": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Nama staf yang digantikan."
         },
         "location": {
           "type": "string",
@@ -715,8 +771,12 @@
         "patrolCompleted": {
           "type": "boolean"
         },
-        "createdAt": {
+        "supervisorUid": {
           "type": "string",
+          "maxLength": 128,
+          "pattern": "^$|^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
           "format": "date-time"
         },
         "updatedAt": {
@@ -745,6 +805,14 @@
     "/employees/{employeeId}": {
       "schema": { "$ref": "#/entities/Employee" },
       "description": "Master employee profiles and contact PII, accessible only to owner or HRD admin."
+    },
+    "/employeeProfiles/{employeeId}": {
+      "schema": { "$ref": "#/entities/EmployeeProfile" },
+      "description": "Private employee personal data, readable and editable only by its owner or HRD admin."
+    },
+    "/employeeDocuments/{documentId}": {
+      "schema": { "$ref": "#/entities/EmployeeDocument" },
+      "description": "Compressed KTP or KK image, keyed as {uid}_{ktp|kk}, accessible only to its owner or HRD admin."
     },
     "/attendance/{attendanceId}": {
       "schema": { "$ref": "#/entities/AttendanceRecord" },

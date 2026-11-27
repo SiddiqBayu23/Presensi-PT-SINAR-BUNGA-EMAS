@@ -1,5 +1,6 @@
 import type {
   AttendanceRecord,
+  BuiltinShiftCode,
   Division,
   DivisionShiftRule,
   Employee,
@@ -11,9 +12,11 @@ import type {
   PayrollSettings,
   ReportType,
   ScheduleEntry,
+  UserPayrollConfig,
   ShiftCode,
   ShiftSwapRequest,
   ShiftTemplate,
+  ShiftTemplateInput,
   ShiftTolerance,
   TodoTask,
   WibComponents,
@@ -34,6 +37,8 @@ export const SHIFT_TEMPLATES: Record<ShiftCode, ShiftTemplate> = {
     startTime: '08:00',
     endTime: '17:00',
     toleranceMinutes: 10,
+    earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   },
   PAGI: {
     code: 'PAGI',
@@ -42,6 +47,8 @@ export const SHIFT_TEMPLATES: Record<ShiftCode, ShiftTemplate> = {
     startTime: '07:00',
     endTime: '15:00',
     toleranceMinutes: 10,
+    earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   },
   SIANG: {
     code: 'SIANG',
@@ -50,6 +57,8 @@ export const SHIFT_TEMPLATES: Record<ShiftCode, ShiftTemplate> = {
     startTime: '15:00',
     endTime: '23:00',
     toleranceMinutes: 10,
+    earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   },
   MALAM: {
     code: 'MALAM',
@@ -58,6 +67,8 @@ export const SHIFT_TEMPLATES: Record<ShiftCode, ShiftTemplate> = {
     startTime: '23:00',
     endTime: '07:00',
     toleranceMinutes: 10,
+    earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   },
   SECURITY24: {
     code: 'SECURITY24',
@@ -66,6 +77,8 @@ export const SHIFT_TEMPLATES: Record<ShiftCode, ShiftTemplate> = {
     startTime: '07:00',
     endTime: '07:00',
     toleranceMinutes: 15,
+    earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   },
 };
 
@@ -92,14 +105,228 @@ export const DEFAULT_DIVISION_SHIFT_RULES: DivisionShiftRule[] = [
 /** Divisi buatan HRD yang belum punya aturan khusus memakai semua shift standar. */
 export const FALLBACK_DIVISION_SHIFT_CODES: ShiftCode[] = ['REGULER', 'PAGI', 'SIANG', 'MALAM'];
 
+/** Urutan tampil shift bawaan di seluruh layar. */
+export const BUILTIN_SHIFT_CODES: BuiltinShiftCode[] = ['REGULER', 'PAGI', 'SIANG', 'MALAM', 'SECURITY24'];
+
+/** Batas panjang kode shift — sama dengan `isValidShift` di firestore.rules. */
+export const SHIFT_CODE_MAX_LENGTH = 16;
+
+/** Batas panjang nama shift yang bisa diisi HRD. */
+export const SHIFT_NAME_MAX_LENGTH = 32;
+
+/**
+ * Katalog shift buatan HRD yang aktif pada sesi ini (tersimpan di localStorage, dimuat
+ * HrisContext saat aplikasi dibuka). Modul-level karena jam kerja shift dipakai juga oleh
+ * fungsi murni di luar React (perhitungan telat, validasi absen, label jadwal).
+ */
+let customShiftTemplates: ShiftTemplate[] = [];
+
+/**
+ * Shift bawaan yang disembunyikan HRD dari katalog ("hapus shift"). Template tetap
+ * bisa di-resolve lewat `findShiftTemplate` supaya absensi/jadwal lama tidak kehilangan
+ * jam kerjanya — hanya tidak lagi ditawarkan untuk divisi/karyawan baru.
+ */
+let hiddenBuiltinShiftCodes: ShiftCode[] = [];
+
+/** Daftarkan katalog shift buatan HRD (dipanggil HrisContext setiap katalog berubah). */
+export function registerShiftTemplates(templates: readonly ShiftTemplate[]): void {
+  customShiftTemplates = templates
+    .filter(
+      (template) =>
+        Boolean(template) &&
+        typeof template.code === 'string' &&
+        template.code !== '' &&
+        !SHIFT_TEMPLATES[template.code]
+    )
+    .map((template) => ({
+      ...template,
+      earlyOutMinutes: normalizeToleranceMinutes(
+        template.earlyOutMinutes,
+        DEFAULT_SHIFT_TOLERANCE.earlyOutMinutes
+      ),
+      lateOutMinutes: normalizeToleranceMinutes(
+        template.lateOutMinutes,
+        DEFAULT_SHIFT_TOLERANCE.lateOutMinutes
+      ),
+      custom: true,
+    }));
+}
+
+/** Daftarkan shift bawaan yang disembunyikan HRD (dipanggil HrisContext saat katalog berubah). */
+export function registerHiddenShiftTemplates(codes: readonly string[]): void {
+  hiddenBuiltinShiftCodes = Array.from(new Set(codes)).filter(
+    (code): code is BuiltinShiftCode => Boolean(SHIFT_TEMPLATES[code])
+  );
+}
+
+/** Apakah shift bawaan ini sudah dihapus (disembunyikan) HRD dari katalog. */
+export function isBuiltinShiftHidden(code: ShiftCode | null | undefined): boolean {
+  return typeof code === 'string' && hiddenBuiltinShiftCodes.includes(code);
+}
+
+/** Seluruh shift yang bisa dipakai karyawan: shift bawaan lebih dulu, lalu buatan HRD. */
+export function allShiftTemplates(): ShiftTemplate[] {
+  return [
+    ...BUILTIN_SHIFT_CODES.filter((code) => !hiddenBuiltinShiftCodes.includes(code)).map(
+      (code) => SHIFT_TEMPLATES[code]
+    ),
+    ...customShiftTemplates,
+  ];
+}
+
+/** Template satu kode shift, atau null bila kode tidak ada di katalog. */
+export function findShiftTemplate(code: ShiftCode | null | undefined): ShiftTemplate | null {
+  if (typeof code !== 'string' || code === '') return null;
+  return customShiftTemplates.find((template) => template.code === code) ?? SHIFT_TEMPLATES[code] ?? null;
+}
+
+/** Template shift tanpa aturan divisi; kode tak dikenal jatuh ke REGULER. */
+export function shiftTemplate(code: ShiftCode | null | undefined): ShiftTemplate {
+  return findShiftTemplate(code) ?? SHIFT_TEMPLATES.REGULER;
+}
+
+/** Nama tampilan shift; kode tak dikenal dikembalikan apa adanya agar tidak menyesatkan. */
+export function shiftTemplateName(code: ShiftCode | null | undefined): string {
+  const found = findShiftTemplate(code);
+  if (found) return found.name;
+  return typeof code === 'string' && code !== '' ? code : SHIFT_TEMPLATES.REGULER.name;
+}
+
+/** Kode shift dari nama, mis. "Shift Malam 2" → "SHIFT_MALAM_2" (unik, maks. 16 karakter). */
+export function buildShiftCode(name: string, taken: readonly string[]): string {
+  const slug = name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, SHIFT_CODE_MAX_LENGTH);
+  const seed = slug.length >= 2 ? slug : 'SHIFT';
+  if (!taken.includes(seed)) return seed;
+  for (let suffix = 2; suffix <= 99; suffix++) {
+    const tail = `_${suffix}`;
+    const candidate = `${seed.slice(0, SHIFT_CODE_MAX_LENGTH - tail.length)}${tail}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+  // Praktis tak tercapai (butuh 99 shift bernama sama); tetap harus menghasilkan kode unik.
+  let fallback = '';
+  do {
+    fallback = `SHIFT_${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+  } while (taken.includes(fallback));
+  return fallback;
+}
+
+/**
+ * Template baru/terubah dari isian form HRD. Jam, nama, dan toleransi divalidasi supaya
+ * nilai tidak masuk akal (mis. "25:00") tidak pernah ikut tersimpan.
+ */
+export function buildShiftTemplate(
+  input: ShiftTemplateInput,
+  taken: readonly string[],
+  code?: ShiftCode
+): { ok: true; template: ShiftTemplate } | { ok: false; error: string } {
+  const name = input.name.trim().replace(/\s+/g, ' ');
+  if (name.length < 2) return { ok: false, error: 'Nama shift minimal 2 karakter.' };
+  if (name.length > SHIFT_NAME_MAX_LENGTH) {
+    return { ok: false, error: `Nama shift maksimal ${SHIFT_NAME_MAX_LENGTH} karakter.` };
+  }
+  const startTime = normalizeShiftTime(input.startTime);
+  const endTime = normalizeShiftTime(input.endTime);
+  if (!startTime || !endTime) {
+    return { ok: false, error: 'Jam shift harus format HH:mm, mis. 08:00 dan 17:00.' };
+  }
+  const toleranceMinutes = Number(input.toleranceMinutes);
+  if (
+    !Number.isFinite(toleranceMinutes) ||
+    toleranceMinutes < 0 ||
+    toleranceMinutes > MAX_TOLERANCE_MINUTES
+  ) {
+    return { ok: false, error: `Toleransi telat harus 0-${MAX_TOLERANCE_MINUTES} menit.` };
+  }
+  const rawEarlyOut = input.earlyOutMinutes;
+  const earlyOutMinutes =
+    rawEarlyOut === undefined || rawEarlyOut === null || (rawEarlyOut as unknown) === ''
+      ? DEFAULT_SHIFT_TOLERANCE.earlyOutMinutes
+      : Number(rawEarlyOut);
+  if (
+    !Number.isFinite(earlyOutMinutes) ||
+    earlyOutMinutes < 0 ||
+    earlyOutMinutes > MAX_TOLERANCE_MINUTES
+  ) {
+    return { ok: false, error: `Toleransi pulang harus 0-${MAX_TOLERANCE_MINUTES} menit.` };
+  }
+  const rawLateOut = input.lateOutMinutes;
+  const lateOutMinutes =
+    rawLateOut === undefined || rawLateOut === null || (rawLateOut as unknown) === ''
+      ? DEFAULT_SHIFT_TOLERANCE.lateOutMinutes
+      : Number(rawLateOut);
+  if (
+    !Number.isFinite(lateOutMinutes) ||
+    lateOutMinutes < 0 ||
+    lateOutMinutes > MAX_TOLERANCE_MINUTES
+  ) {
+    return { ok: false, error: `Toleransi telat pulang harus 0-${MAX_TOLERANCE_MINUTES} menit.` };
+  }
+  const shiftCode = code ?? buildShiftCode(name, taken);
+  if (shiftCode !== code && taken.includes(shiftCode)) {
+    return { ok: false, error: `Kode shift ${shiftCode} sudah dipakai shift lain.` };
+  }
+  return {
+    ok: true,
+    template: {
+      code: shiftCode,
+      name,
+      label: `${name.toUpperCase()} (${startTime}-${endTime})`,
+      startTime,
+      endTime,
+      toleranceMinutes: Math.round(toleranceMinutes),
+      earlyOutMinutes: Math.round(earlyOutMinutes),
+      lateOutMinutes: Math.round(lateOutMinutes),
+      custom: true,
+    },
+  };
+}
+
+/** Muat ulang katalog shift kustom dari penyimpanan; entri rusak/duplikat dibuang. */
+export function normalizeCustomShiftTemplates(raw: unknown): ShiftTemplate[] {
+  if (!Array.isArray(raw)) return [];
+  const templates: ShiftTemplate[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Partial<ShiftTemplateInput> & { code?: unknown };
+    if (typeof record.name !== 'string') continue;
+    const code = typeof record.code === 'string' ? record.code : undefined;
+    if (code && (templates.some((template) => template.code === code) || SHIFT_TEMPLATES[code])) continue;
+    const built = buildShiftTemplate(
+      {
+        name: record.name,
+        startTime: typeof record.startTime === 'string' ? record.startTime : '',
+        endTime: typeof record.endTime === 'string' ? record.endTime : '',
+        toleranceMinutes: Number(record.toleranceMinutes ?? 0),
+        earlyOutMinutes:
+          record.earlyOutMinutes === undefined || record.earlyOutMinutes === null
+            ? undefined
+            : Number(record.earlyOutMinutes),
+        lateOutMinutes:
+          record.lateOutMinutes === undefined || record.lateOutMinutes === null
+            ? undefined
+            : Number(record.lateOutMinutes),
+      },
+      templates.map((template) => template.code),
+      code
+    );
+    if (built.ok) templates.push(built.template);
+  }
+  return templates;
+}
+
 /**
  * Toleransi waktu absensi bawaan: absen masuk dibuka 60 menit sebelum jam masuk,
- * terlambat dianggap tepat waktu sesuai toleransi shift, dan absen pulang dibuka
- * 15 menit sebelum jam pulang (setelahnya tidak dibatasi).
+ * terlambat dianggap tepat waktu sesuai toleransi shift, absen pulang dibuka
+ * 15 menit sebelum jam pulang, dan batas waktu absen pulang 15 menit setelah jam pulang.
  */
 export const DEFAULT_SHIFT_TOLERANCE: Omit<ShiftTolerance, 'lateInMinutes'> = {
   earlyInMinutes: 60,
   earlyOutMinutes: 15,
+  lateOutMinutes: 15,
 };
 
 /** Batas wajar nilai toleransi (menit) agar angka ekstrem tidak merusak logika. */
@@ -142,6 +369,50 @@ export function isValidEmailAddress(email: string): boolean {
   const clean = email.trim();
   if (clean.length < 5 || clean.length > 120) return false;
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean);
+}
+
+/** True hanya untuk tepat 16 digit angka (NIK pada KTP / nomor Kartu Keluarga). */
+export function isSixteenDigits(value: string): boolean {
+  return /^[0-9]{16}$/.test(value.trim());
+}
+
+/**
+ * Menyaring masukan NIK KTP / nomor KK: buang spasi dan tanda hubung, terima hanya
+ * bila hasilnya tepat 16 digit — selain itu '' (agar rules Firestore tetap lolos).
+ */
+export function sanitizeSixteenDigits(value: string): string {
+  const digits = value.replace(/[^0-9]/g, '');
+  return isSixteenDigits(digits) ? digits : '';
+}
+
+/**
+ * Validasi ketat `YYYY-MM-DD`: format benar dan tanggalnya ada di kalender
+ * (mis. `2026-02-30` ditolak), sehingga usia tidak pernah dihitung dari tanggal palsu.
+ */
+export function isValidIsoDateString(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1900 || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
+  );
+}
+
+/**
+ * Usia penuh dalam tahun dari tanggal lahir `YYYY-MM-DD` terhadap `todayIso`.
+ * `null` bila tanggal lahir tidak valid atau masih di masa depan.
+ */
+export function calculateAge(birthDate: string, todayIso: string): number | null {
+  if (!isValidIsoDateString(birthDate) || !isValidIsoDateString(todayIso)) return null;
+  const [birthYear, birthMonth, birthDay] = birthDate.trim().split('-').map(Number);
+  const [todayYear, todayMonth, todayDay] = todayIso.trim().split('-').map(Number);
+  let age = todayYear - birthYear;
+  if (todayMonth < birthMonth || (todayMonth === birthMonth && todayDay < birthDay)) age -= 1;
+  return age < 0 ? null : age;
 }
 
 /**
@@ -249,6 +520,20 @@ export function formatRupiah(amount: number): string {
   return `${sign}Rp ${absStr}`;
 }
 
+/** Memformat angka/string digit dengan pemisah ribuan titik (mis. "5000000" -> "5.000.000") untuk input nominal. */
+export function formatThousands(value: number | string): string {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return '0';
+    return Math.max(0, Math.round(value))
+      .toString()
+      .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  }
+  const digits = value.replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  const normalized = digits.replace(/^0+(?=\d)/, '');
+  return normalized.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
 /**
  * Haversine distance between two WGS84 coordinates in meters.
  */
@@ -305,7 +590,7 @@ export function resolveShiftTemplate(
   code: ShiftCode,
   rule?: DivisionShiftRule | null
 ): ShiftTemplate {
-  const base = SHIFT_TEMPLATES[code] ?? SHIFT_TEMPLATES.REGULER;
+  const base = shiftTemplate(code);
   const custom = rule?.shiftTimes?.[code];
   if (!custom) return base;
   const startTime = normalizeShiftTime(custom.startTime);
@@ -327,18 +612,25 @@ export function shiftTemplateForDivision(
 /**
  * Toleransi absensi efektif sebuah shift: nilai khusus divisi bila HRD
  * mengubahnya, selain itu bawaan (masuk awal 60 menit, terlambat sesuai
- * toleransi shift, pulang awal 15 menit).
+ * toleransi shift, pulang awal dan telat pulang sesuai toleransi shift).
  */
 export function resolveShiftTolerance(
   code: ShiftCode,
   rule?: DivisionShiftRule | null
 ): ShiftTolerance {
-  const base = SHIFT_TEMPLATES[code] ?? SHIFT_TEMPLATES.REGULER;
+  const base = shiftTemplate(code);
   const custom = rule?.shiftTolerances?.[code];
   return {
     earlyInMinutes: normalizeToleranceMinutes(custom?.earlyInMinutes, DEFAULT_SHIFT_TOLERANCE.earlyInMinutes),
     lateInMinutes: normalizeToleranceMinutes(custom?.lateInMinutes, base.toleranceMinutes),
-    earlyOutMinutes: normalizeToleranceMinutes(custom?.earlyOutMinutes, DEFAULT_SHIFT_TOLERANCE.earlyOutMinutes),
+    earlyOutMinutes: normalizeToleranceMinutes(
+      custom?.earlyOutMinutes,
+      normalizeToleranceMinutes(base.earlyOutMinutes, DEFAULT_SHIFT_TOLERANCE.earlyOutMinutes)
+    ),
+    lateOutMinutes: normalizeToleranceMinutes(
+      custom?.lateOutMinutes,
+      normalizeToleranceMinutes(base.lateOutMinutes, DEFAULT_SHIFT_TOLERANCE.lateOutMinutes)
+    ),
   };
 }
 
@@ -388,9 +680,9 @@ export function validateClockIn(
 }
 
 /**
- * Validasi waktu absen pulang: ditolak bila lebih awal dari toleransi pulang
- * (mis. jam pulang 17:00 dengan toleransi 15 menit → dibuka sejak 16:45).
- * Absen pulang setelah jam pulang tidak dibatasi.
+ * Validasi waktu absen pulang: ditolak bila lebih awal dari toleransi pulang awal
+ * (mis. jam pulang 17:00 dengan toleransi 15 menit → dibuka sejak 16:45) atau
+ * melewati toleransi batas waktu pulang (mis. 15 menit setelah 17:00 → ditutup setelah 17:15).
  */
 export function validateClockOut(
   clockOutTime: string,
@@ -405,6 +697,13 @@ export function validateClockOut(
     return {
       ok: false,
       error: `Absen pulang dibuka mulai ${opensAt} (maksimal ${tolerance.earlyOutMinutes} menit sebelum jam pulang ${minutesToTimeLabel(end)}).`,
+    };
+  }
+  if (delta > tolerance.lateOutMinutes) {
+    const closesAt = minutesToTimeLabel(end + tolerance.lateOutMinutes);
+    return {
+      ok: false,
+      error: `Batas waktu absen pulang berakhir pada ${closesAt} (maksimal ${tolerance.lateOutMinutes} menit setelah jam pulang ${minutesToTimeLabel(end)}).`,
     };
   }
   return { ok: true };
@@ -520,6 +819,26 @@ export function effectiveShiftForDate(
 }
 
 /**
+ * Jadwal harian pada/atau setelah `fromDate` yang masih memakai shift profil lama.
+ * Absensi mengikuti jadwal harian (`effectiveShiftForDate`), jadi saat HRD mengganti
+ * shift profil, baris jadwal yang hanya mengikuti shift bawaan lama ikut dipindah —
+ * kalau tidak, shift baru tidak akan pernah terpakai untuk absen.
+ */
+export function schedulesMirroringProfileShift(params: {
+  uid: string;
+  previousShift?: ShiftCode | null;
+  nextShift?: ShiftCode | null;
+  fromDate: string;
+  schedules: ScheduleEntry[];
+}): ScheduleEntry[] {
+  const { uid, previousShift, nextShift, fromDate, schedules } = params;
+  if (!previousShift || !nextShift || previousShift === nextShift) return [];
+  return schedules.filter(
+    (sch) => sch.uid === uid && sch.shiftCode === previousShift && sch.date >= fromDate
+  );
+}
+
+/**
  * Jadwal lain milik karyawan yang bertabrakan dengan shift yang akan dipasang
  * pada tanggal tertentu (termasuk shift malam/24 jam lintas hari).
  */
@@ -563,11 +882,33 @@ export function resolveDivisionShiftRule(
   rules: DivisionShiftRule[] = DEFAULT_DIVISION_SHIFT_RULES
 ): DivisionShiftRule {
   const found = rules.find((rule) => rule.division === division);
-  if (found && found.allowedShiftCodes.length > 0) return found;
+  const source =
+    found && found.allowedShiftCodes.length > 0
+      ? found.allowedShiftCodes
+      : FALLBACK_DIVISION_SHIFT_CODES;
+  // Shift yang sudah dihapus HRD berhenti ditawarkan untuk divisi ini.
+  const allowedShiftCodes = source.filter((code) => !isBuiltinShiftHidden(code));
+  if (found && allowedShiftCodes.length === source.length) return found;
+  if (allowedShiftCodes.length === 0) {
+    // Semua shift divisi sudah dihapus HRD: pakai shift yang masih ada di katalog.
+    const remaining = allShiftTemplates().map((template) => template.code);
+    return {
+      division,
+      allowedShiftCodes: remaining,
+      defaultShiftCode: remaining[0] ?? 'REGULER',
+      shiftTimes: found?.shiftTimes,
+      shiftTolerances: found?.shiftTolerances,
+    };
+  }
   return {
     division,
-    allowedShiftCodes: FALLBACK_DIVISION_SHIFT_CODES,
-    defaultShiftCode: 'REGULER',
+    allowedShiftCodes,
+    defaultShiftCode:
+      found && allowedShiftCodes.includes(found.defaultShiftCode)
+        ? found.defaultShiftCode
+        : allowedShiftCodes[0],
+    shiftTimes: found?.shiftTimes,
+    shiftTolerances: found?.shiftTolerances,
   };
 }
 
@@ -692,13 +1033,13 @@ export interface ShiftSwapValidationInput {
 export function validateShiftSwap(
   input: ShiftSwapValidationInput
 ): { ok: true } | { ok: false; error: string } {
-  const toShiftName = SHIFT_TEMPLATES[input.toShift]?.name ?? input.toShift;
+  const toShiftName = shiftTemplateName(input.toShift);
   if (input.toShift === input.fromShift) {
     return { ok: false, error: 'Pilih shift tujuan yang berbeda dari shift Anda saat ini.' };
   }
   const rule = resolveDivisionShiftRule(input.division, input.rules);
   if (!rule.allowedShiftCodes.includes(input.toShift)) {
-    const allowed = rule.allowedShiftCodes.map((code) => SHIFT_TEMPLATES[code]?.name ?? code);
+    const allowed = rule.allowedShiftCodes.map((code) => shiftTemplateName(code));
     return {
       ok: false,
       error: `Shift ${toShiftName} tidak tersedia untuk divisi ${input.division}. Pilihan: ${allowed.join(', ')}.`,
@@ -766,6 +1107,28 @@ export function calculateOvertimeEstimate(
   return { hours, estimatedPay };
 }
 
+/** Jumlah hari kerja standar per bulan untuk membagi target gaji bulanan menjadi gaji per absen. */
+export const DEFAULT_WORK_DAYS_TARGET = 26;
+
+/** Menghasilkan daftar periode slip gaji terbaru (bulan berjalan + beberapa bulan sebelumnya). */
+export function buildRecentPayslipPeriods(
+  year: number,
+  month: number,
+  count = 6
+): Array<{ key: string; label: string }> {
+  const list: Array<{ key: string; label: string }> = [];
+  for (let offset = 0; offset < count; offset += 1) {
+    const d = new Date(Date.UTC(year, month - 1 - offset, 1));
+    const y = d.getUTCFullYear();
+    const m = d.getUTCMonth() + 1;
+    list.push({
+      key: `${y}-${String(m).padStart(2, '0')}`,
+      label: `${INDONESIAN_MONTHS[m - 1]} ${y}`,
+    });
+  }
+  return list;
+}
+
 /** Nilai bawaan pengaturan payroll (identik dengan perhitungan lama). */
 export const DEFAULT_PAYROLL_SETTINGS: PayrollSettings = {
   bpjsKesehatanRate: 0.01,
@@ -775,6 +1138,32 @@ export const DEFAULT_PAYROLL_SETTINGS: PayrollSettings = {
   overtimeHourlyMultiplier: 1.5,
   overtimeSessionRate: 50000,
 };
+
+/** Menggabungkan pengaturan payroll global dengan override khusus satu karyawan. */
+export function resolveEffectivePayrollSettings(
+  globalSettings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS,
+  userConfig?: Partial<UserPayrollConfig>
+): { settings: PayrollSettings; workDaysTarget: number } {
+  const rawTarget = Math.round(Number(userConfig?.workDaysTarget ?? DEFAULT_WORK_DAYS_TARGET));
+  const workDaysTarget =
+    Number.isFinite(rawTarget) && rawTarget >= 1 && rawTarget <= 31
+      ? rawTarget
+      : DEFAULT_WORK_DAYS_TARGET;
+  return {
+    workDaysTarget,
+    settings: {
+      bpjsKesehatanRate: userConfig?.bpjsKesehatanRate ?? globalSettings.bpjsKesehatanRate,
+      bpjsKetenagakerjaanRate:
+        userConfig?.bpjsKetenagakerjaanRate ?? globalSettings.bpjsKetenagakerjaanRate,
+      lateDeductionPerMinute:
+        userConfig?.lateDeductionPerMinute ?? globalSettings.lateDeductionPerMinute,
+      overtimeRateMode: userConfig?.overtimeRateMode ?? globalSettings.overtimeRateMode,
+      overtimeHourlyMultiplier:
+        userConfig?.overtimeHourlyMultiplier ?? globalSettings.overtimeHourlyMultiplier,
+      overtimeSessionRate: userConfig?.overtimeSessionRate ?? globalSettings.overtimeSessionRate,
+    },
+  };
+}
 
 /** Insentif lembur satu pengajuan sesuai mode per jam / per sesi. */
 export function calculateOvertimePayForRequest(
@@ -870,9 +1259,21 @@ function formatRatePercent(rate: number): string {
   return `${Number(percent.toFixed(2))}%`;
 }
 
+/** Menghitung nilai proporsional berdasar kehadiran: 0 bila tidak hadir, penuh bila tepat target. */
+function prorateByAttendance(
+  monthlyAmount: number,
+  attendanceDays: number,
+  workDaysTarget: number
+): number {
+  if (attendanceDays <= 0 || monthlyAmount <= 0) return 0;
+  if (attendanceDays === workDaysTarget) return Math.round(monthlyAmount);
+  return Math.round((monthlyAmount * attendanceDays) / workDaysTarget);
+}
+
 /**
- * Computes monthly payslip breakdown from employee profile, attendance logs,
- * approved overtime, and HRD-configured payroll components/settings.
+ * Menghitung rincian slip gaji bulanan berdasarkan kehadiran aktual karyawan di kantor
+ * (proporsional per absen terhadap target hari kerja, bawaan 26 hari), lembur disetujui,
+ * potongan BPJS, keterlambatan, serta komponen khusus per karyawan.
  */
 export function calculatePayslip(
   employee: Employee,
@@ -881,8 +1282,13 @@ export function calculatePayslip(
   attendanceRecords: AttendanceRecord[],
   overtimeRequests: OvertimeRequest[],
   components: PayslipComponent[] = [],
-  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS
+  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS,
+  userConfig?: Partial<UserPayrollConfig>
 ): PayslipBreakdown {
+  const { settings: effectiveSettings, workDaysTarget } = resolveEffectivePayrollSettings(
+    settings,
+    userConfig
+  );
   const empAttendance = attendanceRecords.filter(
     (r) => r.uid === employee.uid && r.date.startsWith(periodKey)
   );
@@ -890,33 +1296,61 @@ export function calculatePayslip(
     (o) => o.uid === employee.uid && o.status === 'Disetujui' && o.date.startsWith(periodKey)
   );
 
+  const attendanceDays = empAttendance.length;
+  const dailyBaseRate = Math.round(employee.baseSalary / workDaysTarget);
+  const dailyTotalRate = Math.round(
+    (employee.baseSalary + employee.positionAllowance + employee.mealTransportAllowance) /
+      workDaysTarget
+  );
+  const earnedBasePay = prorateByAttendance(employee.baseSalary, attendanceDays, workDaysTarget);
+  const earnedPositionAllowance = prorateByAttendance(
+    employee.positionAllowance,
+    attendanceDays,
+    workDaysTarget
+  );
+  const earnedMealAllowance = prorateByAttendance(
+    employee.mealTransportAllowance,
+    attendanceDays,
+    workDaysTarget
+  );
+
   const overtimeHours = empOvertime.reduce((sum, item) => sum + item.hours, 0);
   const overtimePay = empOvertime.reduce(
-    (sum, item) => sum + calculateOvertimePayForRequest(item, employee.baseSalary, settings),
+    (sum, item) => sum + calculateOvertimePayForRequest(item, employee.baseSalary, effectiveSettings),
     0
   );
   const lateMinutesTotal = empAttendance.reduce((sum, item) => sum + (item.lateMinutes || 0), 0);
 
-  const lateDeduction = lateMinutesTotal * settings.lateDeductionPerMinute;
-  const bpjsKesehatan = Math.round(employee.baseSalary * settings.bpjsKesehatanRate);
-  const bpjsKetenagakerjaan = Math.round(employee.baseSalary * settings.bpjsKetenagakerjaanRate);
+  const lateDeduction = lateMinutesTotal * effectiveSettings.lateDeductionPerMinute;
+  const hasActivity = attendanceDays > 0 || overtimePay > 0;
+  const bpjsKesehatan = hasActivity
+    ? Math.round(employee.baseSalary * effectiveSettings.bpjsKesehatanRate)
+    : 0;
+  const bpjsKetenagakerjaan = hasActivity
+    ? Math.round(employee.baseSalary * effectiveSettings.bpjsKetenagakerjaanRate)
+    : 0;
   const { earnings: extraEarnings, deductions: extraDeductions } = resolvePayslipComponents(
     employee,
     components
   );
 
   const earnings: PayslipLineItem[] = [
-    { code: 'BASE', label: 'Gaji Pokok', amount: employee.baseSalary, kind: 'earning' },
+    {
+      code: 'BASE',
+      label: `Gaji Kehadiran (${attendanceDays}/${workDaysTarget} hari • ${formatRupiah(dailyBaseRate)}/hadir)`,
+      amount: earnedBasePay,
+      kind: 'earning',
+    },
     {
       code: 'POSITION',
-      label: 'Tunjangan Jabatan',
-      amount: employee.positionAllowance,
+      label: `Tunjangan Jabatan (${attendanceDays}/${workDaysTarget} hari)`,
+      amount: earnedPositionAllowance,
       kind: 'earning',
     },
     {
       code: 'MEAL',
-      label: 'Tunjangan Makan & Transport',
-      amount: employee.mealTransportAllowance,
+      label: `Tunjangan Makan & Transport (${attendanceDays}/${workDaysTarget} hari)`,
+      amount: earnedMealAllowance,
       kind: 'earning',
     },
   ];
@@ -924,7 +1358,7 @@ export function calculatePayslip(
     earnings.push({
       code: 'OVERTIME',
       label:
-        settings.overtimeRateMode === 'perSesi'
+        effectiveSettings.overtimeRateMode === 'perSesi'
           ? `Insentif Lembur (${empOvertime.length} sesi)`
           : `Insentif Lembur (${overtimeHours} jam)`,
       amount: overtimePay,
@@ -937,7 +1371,7 @@ export function calculatePayslip(
   if (bpjsKesehatan > 0) {
     deductions.push({
       code: 'BPJS_KES',
-      label: `BPJS Kesehatan (${formatRatePercent(settings.bpjsKesehatanRate)})`,
+      label: `BPJS Kesehatan (${formatRatePercent(effectiveSettings.bpjsKesehatanRate)})`,
       amount: bpjsKesehatan,
       kind: 'deduction',
     });
@@ -945,7 +1379,7 @@ export function calculatePayslip(
   if (bpjsKetenagakerjaan > 0) {
     deductions.push({
       code: 'BPJS_TK',
-      label: `BPJS Ketenagakerjaan (${formatRatePercent(settings.bpjsKetenagakerjaanRate)})`,
+      label: `BPJS Ketenagakerjaan (${formatRatePercent(effectiveSettings.bpjsKetenagakerjaanRate)})`,
       amount: bpjsKetenagakerjaan,
       kind: 'deduction',
     });
@@ -970,6 +1404,12 @@ export function calculatePayslip(
     baseSalary: employee.baseSalary,
     positionAllowance: employee.positionAllowance,
     mealTransportAllowance: employee.mealTransportAllowance,
+    workDaysTarget,
+    dailyBaseRate,
+    dailyTotalRate,
+    earnedBasePay,
+    earnedPositionAllowance,
+    earnedMealAllowance,
     overtimeHours,
     overtimePay,
     grossPay,
@@ -979,10 +1419,10 @@ export function calculatePayslip(
     lateDeduction,
     totalDeductions,
     netPay,
-    attendanceDays: empAttendance.length,
+    attendanceDays,
     earnings,
     deductions,
-    overtimeRateMode: settings.overtimeRateMode,
+    overtimeRateMode: effectiveSettings.overtimeRateMode,
   };
 }
 
@@ -1127,4 +1567,205 @@ export function renderSquareAvatar(image: HTMLImageElement, size = 256): string 
   ctx.fillRect(0, 0, size, size);
   ctx.drawImage(image, sx, sy, side, side, 0, 0, size, size);
   return canvas.toDataURL('image/jpeg', 0.82);
+}
+
+export interface StaffDutyInfo {
+  mySchedule: ScheduleEntry | null;
+  shiftCode: ShiftCode;
+  isBackup: boolean;
+  replacedName?: string;
+  dutyPartners: Employee[];
+  backupStaff: Employee | null;
+}
+
+/**
+ * Mencari informasi tugas jaga untuk staf tertentu pada suatu tanggal:
+ * - Rekan kerja yang bertugas bersama di shift yang sama.
+ * - Staf cadangan (backup) untuk shift tersebut.
+ * - Status apakah staf login bertugas sebagai staf utama atau backup.
+ */
+export function getStaffDutyInfo(params: {
+  uid: string;
+  date: string;
+  schedules: ScheduleEntry[];
+  employees: Employee[];
+  fallbackShift: ShiftCode;
+}): StaffDutyInfo {
+  const { uid, date, schedules, employees, fallbackShift } = params;
+  const user = employees.find((e) => e.uid === uid);
+  const mySchedule = schedules.find((s) => s.uid === uid && s.date === date) ?? null;
+  const shiftCode = mySchedule?.shiftCode ?? fallbackShift;
+  const isBackup = Boolean(mySchedule?.isBackup);
+  const division = user?.division;
+
+  // Jadwal di shift & tanggal yang sama (divisi sama jika ada)
+  const sameShiftSchedules = schedules.filter((s) => {
+    if (s.date !== date || s.shiftCode !== shiftCode) return false;
+    if (division) {
+      const emp = employees.find((e) => e.uid === s.uid);
+      if (emp && emp.division !== division) return false;
+    }
+    return true;
+  });
+
+  const dutyPartners: Employee[] = [];
+  let backupStaff: Employee | null = null;
+
+  for (const s of sameShiftSchedules) {
+    const emp = employees.find((e) => e.uid === s.uid);
+    if (!emp) continue;
+    if (s.isBackup) {
+      if (!backupStaff) backupStaff = emp;
+    } else {
+      if (s.uid !== uid) {
+        dutyPartners.push(emp);
+      }
+    }
+  }
+
+  return {
+    mySchedule,
+    shiftCode,
+    isBackup,
+    replacedName: mySchedule?.replacedName,
+    dutyPartners,
+    backupStaff,
+  };
+}
+
+export interface ShiftRoster {
+  shiftCode: ShiftCode;
+  division: string;
+  primaryStaff: Employee[];
+  backupStaff: Employee | null;
+  entries: ScheduleEntry[];
+}
+
+/**
+ * Mengelompokkan seluruh penugasan jaga pada suatu tanggal per shift & divisi.
+ */
+export function getShiftRostersForDate(params: {
+  date: string;
+  division?: string;
+  schedules: ScheduleEntry[];
+  employees: Employee[];
+}): ShiftRoster[] {
+  const { date, division, schedules, employees } = params;
+  const relevant = schedules.filter((s) => {
+    if (s.date !== date) return false;
+    if (division) {
+      const emp = employees.find((e) => e.uid === s.uid);
+      if (emp && emp.division !== division) return false;
+    }
+    return true;
+  });
+
+  const groups = new Map<string, { shiftCode: ShiftCode; division: string; entries: ScheduleEntry[] }>();
+
+  for (const s of relevant) {
+    const emp = employees.find((e) => e.uid === s.uid);
+    const div = emp?.division || division || 'Umum';
+    const key = `${div}__${s.shiftCode}`;
+    if (!groups.has(key)) {
+      groups.set(key, { shiftCode: s.shiftCode, division: div, entries: [] });
+    }
+    groups.get(key)!.entries.push(s);
+  }
+
+  const rosters: ShiftRoster[] = [];
+  for (const group of groups.values()) {
+    const primaryStaff: Employee[] = [];
+    let backupStaff: Employee | null = null;
+    for (const ent of group.entries) {
+      const emp = employees.find((e) => e.uid === ent.uid);
+      if (!emp) continue;
+      if (ent.isBackup) {
+        if (!backupStaff) backupStaff = emp;
+      } else {
+        primaryStaff.push(emp);
+      }
+    }
+    rosters.push({
+      shiftCode: group.shiftCode,
+      division: group.division,
+      primaryStaff,
+      backupStaff,
+      entries: group.entries,
+    });
+  }
+
+  return rosters;
+}
+
+export interface ScheduleGapWarning {
+  date: string;
+  division: string;
+  shiftCode?: ShiftCode;
+  type: 'no_schedule' | 'no_backup';
+  message: string;
+}
+
+/**
+ * Memeriksa peringatan bila ada jadwal yang belum dibuat atau belum ada staf backup:
+ * - Divisi tidak memiliki satupun jadwal kerja pada tanggal tertentu.
+ * - Shift pada tanggal tertentu memiliki staf jaga tetapi belum ada staf backup (cadangan).
+ */
+export function checkScheduleGaps(params: {
+  divisions: string[];
+  employees: Employee[];
+  schedules: ScheduleEntry[];
+  startDate: string; // YYYY-MM-DD
+  daysCount?: number; // bawaan: 7 hari ke depan
+}): ScheduleGapWarning[] {
+  const { divisions, employees, schedules, startDate, daysCount = 7 } = params;
+  const warnings: ScheduleGapWarning[] = [];
+  const start = new Date(`${startDate}T00:00:00`);
+
+  for (let i = 0; i < daysCount; i += 1) {
+    const d = new Date(start.getTime() + i * 86_400_000);
+    const isoDate = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+      d.getDate()
+    ).padStart(2, '0')}`;
+
+    for (const div of divisions) {
+      const activeDivEmployees = employees.filter((e) => e.division === div && e.active);
+      if (activeDivEmployees.length === 0) continue;
+
+      const divSchedulesOnDate = schedules.filter((s) => {
+        if (s.date !== isoDate) return false;
+        const emp = employees.find((e) => e.uid === s.uid);
+        return emp && emp.division === div;
+      });
+
+      if (divSchedulesOnDate.length === 0) {
+        warnings.push({
+          date: isoDate,
+          division: div,
+          type: 'no_schedule',
+          message: `Divisi ${div} belum memiliki jadwal kerja untuk ${isoDate}.`,
+        });
+      } else {
+        // Cek apakah ada shift yang tidak memiliki backup
+        const shiftMap = new Map<ShiftCode, ScheduleEntry[]>();
+        for (const s of divSchedulesOnDate) {
+          if (!shiftMap.has(s.shiftCode)) shiftMap.set(s.shiftCode, []);
+          shiftMap.get(s.shiftCode)!.push(s);
+        }
+        for (const [code, entries] of shiftMap.entries()) {
+          const hasBackup = entries.some((e) => e.isBackup === true);
+          if (!hasBackup) {
+            warnings.push({
+              date: isoDate,
+              division: div,
+              shiftCode: code,
+              type: 'no_backup',
+              message: `Jadwal shift ${code} divisi ${div} pada ${isoDate} belum memiliki staf backup (cadangan).`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return warnings;
 }

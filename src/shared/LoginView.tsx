@@ -4,6 +4,7 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  LogOut,
   Mail,
   RefreshCw,
   ShieldCheck,
@@ -26,11 +27,13 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
   const {
     firebaseUser,
     needsEmailVerification,
+    accountDisabledNotice,
     loginWithEmail,
     loginWithGoogle,
     sendResetPassword,
     resendVerificationEmail,
     refreshAuthUser,
+    logout,
   } = useHris();
 
   const [mode, setMode] = useState<LoginMode>('form');
@@ -40,6 +43,7 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
   const [submitting, setSubmitting] = useState(false);
   const [resending, setResending] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
 
@@ -125,14 +129,26 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
     }
   };
 
+  /**
+   * Jalan keluar bila email salah ketik atau kotak masuk tak bisa diakses:
+   * sesi Firebase ditutup, halaman kembali ke formulir masuk.
+   */
+  const handleSignOut = async () => {
+    setError(null);
+    setInfoMsg(null);
+    setSigningOut(true);
+    await logout();
+    setSigningOut(false);
+  };
+
   return (
-    <div className="min-h-screen w-full bg-[#F4F7FB] flex items-center justify-center p-3 sm:p-6 lg:p-8 selection:bg-[#0B2453] selection:text-white">
+    <div className="min-h-screen w-full bg-[#F4F7FB] flex items-center justify-center p-3 sm:p-6 lg:p-8">
       <main className="w-full max-w-5xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-stretch">
           {/* Brand panel */}
           <section className="lg:col-span-7 rounded-3xl bg-gradient-to-br from-[#0B2453] via-[#12305F] to-[#0B2453] text-white p-7 sm:p-9 flex flex-col justify-between gap-8 shadow-xl">
             <div className="space-y-5">
-              <SbumFullLogo className="items-start" />
+              <SbumFullLogo className="items-start" onDark />
               <div className="space-y-2">
                 <h1 className="text-2xl sm:text-3xl font-extrabold leading-tight">
                   Absensi &amp; HRIS Terpadu
@@ -166,6 +182,11 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
 
           {/* Auth card */}
           <section className="lg:col-span-5 rounded-3xl bg-white p-6 sm:p-8 shadow-xl border border-slate-100 flex flex-col">
+            {accountDisabledNotice && (
+              <div className="mb-5">
+                <Banner tone="error" text={accountDisabledNotice} />
+              </div>
+            )}
             {needsEmailVerification && firebaseUser ? (
               <div className="space-y-5">
                 <div className="flex items-center gap-3">
@@ -200,6 +221,21 @@ export function LoginView({ onLoginSuccess }: LoginViewProps) {
                   <RefreshCw className={`w-4 h-4 ${resending ? 'animate-spin' : ''}`} />
                   {resending ? 'Mengirim...' : 'Kirim ulang email verifikasi'}
                 </button>
+                <div className="pt-3 border-t border-slate-100 space-y-2">
+                  <p className="text-[11px] text-slate-400">
+                    Email salah atau kotak masuk tidak bisa dibuka? Keluar lalu masuk dengan akun
+                    lain.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void handleSignOut()}
+                    disabled={signingOut}
+                    className="w-full h-10 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-60 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    {signingOut ? 'Keluar...' : 'Keluar (ganti akun)'}
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="space-y-5">

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ArrowLeftRight,
   CalendarDays,
@@ -7,14 +7,18 @@ import {
   Circle,
   Clock,
   MapPin,
+  Shield,
   ShieldCheck,
+  Users,
 } from 'lucide-react';
 import { useHris } from '../../context/HrisContext';
 import type { SubmissionSubTab } from '../../types/hris';
 import {
   effectiveShiftForDate,
   formatIndonesianDateFromIso,
+  getStaffDutyInfo,
   resolveDivisionShiftRule,
+  resolveShiftTolerance,
 } from '../../utils/hrisLogic';
 
 interface ScheduleViewProps {
@@ -24,6 +28,7 @@ interface ScheduleViewProps {
 export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
   const {
     currentUser,
+    employees,
     schedules,
     togglePatrolComplete,
     divisionShiftRules,
@@ -44,11 +49,27 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
     currentUser.shiftCode
   );
   const currentShift = shiftTemplateFor(todayShiftCode, currentUser.division);
+  // Toleransi efektif (bisa khusus divisi): telat masuk & jam buka absen pulang.
+  const currentTolerance = resolveShiftTolerance(
+    todayShiftCode,
+    resolveDivisionShiftRule(currentUser.division, divisionShiftRules)
+  );
   // Hanya shift yang memang berlaku untuk divisi karyawan ini.
   const divisionShiftCodes = resolveDivisionShiftRule(
     currentUser.division,
     divisionShiftRules
   ).allowedShiftCodes;
+
+  // Informasi siapa saja rekan jaga & petugas backup hari ini (Requirement 14)
+  const todayDutyInfo = useMemo(() => {
+    return getStaffDutyInfo({
+      uid: currentUser.uid,
+      date: wibNow.isoDate,
+      schedules,
+      employees,
+      fallbackShift: currentUser.shiftCode,
+    });
+  }, [currentUser.uid, currentUser.shiftCode, wibNow.isoDate, schedules, employees]);
 
   return (
     <div className="space-y-5">
@@ -62,8 +83,10 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
             </div>
             <p className="mt-1 text-xs sm:text-sm text-slate-600">
               Shift Aktif Hari Ini:{' '}
-              <strong className="text-[#0B2453]">{currentShift.label}</strong> &bull; Toleransi{' '}
-              {currentShift.toleranceMinutes} menit
+              <strong className="text-[#0B2453]">{currentShift.label}</strong> &bull; Toleransi
+              masuk: awal {currentTolerance.earlyInMinutes} mnt, telat{' '}
+              {currentTolerance.lateInMinutes} mnt &bull; Toleransi pulang: awal{' '}
+              {currentTolerance.earlyOutMinutes} mnt, telat {currentTolerance.lateOutMinutes} mnt
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500">
               Jam kerja divisi {currentUser.division}:{' '}
@@ -83,6 +106,67 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
             <ArrowLeftRight className="w-4 h-4" />
             <span>Ajukan Tukar Shift</span>
           </button>
+        </div>
+
+        {/* Rekan Jaga & Petugas Backup Hari Ini (Requirement 14) */}
+        <div className="mt-4 p-4 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50/40 border border-blue-200/80 space-y-2.5">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-[#0B2453]" />
+            <h2 className="text-xs sm:text-sm font-extrabold text-[#0B2453]">
+              Informasi Rekan Tugas &amp; Backup Hari Ini
+            </h2>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+            {/* Rekan Jaga Bersama */}
+            <div className="p-3 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+              <span className="text-[11px] font-bold text-slate-500 block mb-1">
+                👥 Rekan Jaga (Satu Shift):
+              </span>
+              {todayDutyInfo.isBackup ? (
+                <div className="text-amber-800 font-bold flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Anda adalah Petugas Cadangan (Backup)</span>
+                </div>
+              ) : todayDutyInfo.dutyPartners.length > 0 ? (
+                <div className="space-y-0.5">
+                  <div className="font-extrabold text-[#0B2453]">
+                    {todayDutyInfo.dutyPartners.map((p) => p.name).join(', ')}
+                  </div>
+                  <span className="text-[10px] text-slate-500">
+                    ({todayDutyInfo.dutyPartners.length} rekan bertugas bersama Anda)
+                  </span>
+                </div>
+              ) : (
+                <span className="text-slate-600 font-medium italic">
+                  Bertugas mandiri / belum ada rekan tambahan terjadwal
+                </span>
+              )}
+            </div>
+
+            {/* Petugas Cadangan / Backup */}
+            <div className="p-3 rounded-xl bg-white border border-slate-200/80 shadow-2xs">
+              <span className="text-[11px] font-bold text-slate-500 block mb-1">
+                🛡️ Petugas Cadangan (Backup Shift Ini):
+              </span>
+              {todayDutyInfo.replacedName ? (
+                <div className="text-emerald-800 font-bold">
+                  🔄 Anda aktif menggantikan <strong>{todayDutyInfo.replacedName}</strong> (Cuti/Izin)
+                </div>
+              ) : todayDutyInfo.backupStaff ? (
+                <div className="font-extrabold text-amber-950">
+                  {todayDutyInfo.backupStaff.name}{' '}
+                  <span className="text-[10px] text-amber-800 font-mono">
+                    ({todayDutyInfo.backupStaff.nik})
+                  </span>
+                </div>
+              ) : (
+                <span className="text-slate-500 italic">
+                  Belum ada petugas cadangan yang ditentukan
+                </span>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* All Shift Templates */}
@@ -130,15 +214,33 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
             <div className="space-y-3">
               {mySchedules.map((sch) => {
                 const tpl = shiftTemplateFor(sch.shiftCode, currentUser.division);
+                const info = getStaffDutyInfo({
+                  uid: currentUser.uid,
+                  date: sch.date,
+                  schedules,
+                  employees,
+                  fallbackShift: currentUser.shiftCode,
+                });
+
                 return (
                   <div
                     key={sch.id}
                     className="rounded-2xl border border-slate-200/80 bg-[#F9FBFE] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
-                    <div className="space-y-1">
+                    <div className="space-y-2 flex-1">
                       <div className="flex items-center gap-2 text-sm font-bold text-[#0B2453]">
                         <CalendarDays className="w-4 h-4 text-[#C69214]" />
                         <span>{formatIndonesianDateFromIso(sch.date)}</span>
+                        {sch.isBackup && (
+                          <span className="text-[10px] font-extrabold bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-300">
+                            🛡️ Petugas Backup
+                          </span>
+                        )}
+                        {sch.replacedName && (
+                          <span className="text-[10px] font-extrabold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full border border-emerald-300">
+                            🔄 Gantikan {sch.replacedName}
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
                         <span className="inline-flex items-center gap-1 font-mono tabular-nums font-semibold text-slate-800">
@@ -150,6 +252,27 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
                           {sch.location}
                         </span>
                       </div>
+
+                      {/* Info Rekan Jaga & Backup (Requirement 14) */}
+                      <div className="text-xs text-slate-700 bg-white/80 p-2 rounded-xl border border-slate-200/80 flex flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-1">
+                          <Users className="w-3.5 h-3.5 text-[#0B2453]" />
+                          <span className="text-slate-500">Jaga bersama:</span>{' '}
+                          <strong className="text-[#0B2453]">
+                            {info.dutyPartners.length > 0
+                              ? info.dutyPartners.map((p) => p.name).join(', ')
+                              : 'Mandiri'}
+                          </strong>
+                        </div>
+                        {info.backupStaff && (
+                          <div className="flex items-center gap-1 text-amber-800">
+                            <Shield className="w-3 h-3 text-amber-600" />
+                            <span className="text-slate-500">Backup:</span>{' '}
+                            <strong>{info.backupStaff.name}</strong>
+                          </div>
+                        )}
+                      </div>
+
                       {sch.notes && <p className="text-xs text-slate-500">{sch.notes}</p>}
                     </div>
 
@@ -219,7 +342,11 @@ export function ScheduleView({ onOpenShiftSwap }: ScheduleViewProps) {
             <div>
               <div className="text-xs font-bold text-[#0B2453]">Toleransi Keterlambatan</div>
               <p className="text-[11px] text-slate-600 mt-0.5">
-                Toleransi 10 menit dari jam mulai shift. Pengajuan tukar shift dapat dilakukan sebelum hari H.
+                Masuk dibuka {currentTolerance.earlyInMinutes} menit sebelum jam masuk (telat{' '}
+                {currentTolerance.lateInMinutes} menit) &bull; absen pulang dibuka{' '}
+                {currentTolerance.earlyOutMinutes} menit sebelum jam pulang hingga{' '}
+                {currentTolerance.lateOutMinutes} menit setelah jam pulang. Pengajuan tukar shift
+                dapat dilakukan sebelum hari H.
               </p>
             </div>
           </div>

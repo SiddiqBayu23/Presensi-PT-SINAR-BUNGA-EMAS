@@ -53,6 +53,7 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
     schedules,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
     wibNow,
   } = useHris();
 
@@ -95,11 +96,13 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
       schedules: scopedSchedules,
       payslipComponents,
       payrollSettings,
+      userPayrollConfigs,
     };
   }, [
     attendance,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
     currentUser,
     employees,
     exitClearances,
@@ -125,10 +128,11 @@ export function ExportAllPanel({ scope, onExportDone }: ExportAllPanelProps) {
           dataset.attendance,
           dataset.overtimes,
           payslipComponents,
-          payrollSettings
+          payrollSettings,
+          userPayrollConfigs[emp.uid]
         ),
       })),
-    [dataset, payslipComponents, payrollSettings]
+    [dataset, payslipComponents, payrollSettings, userPayrollConfigs]
   );
 
   const notify = (msg: string) => {

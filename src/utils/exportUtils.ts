@@ -8,6 +8,7 @@ import type {
   PayslipComponent,
   ScheduleEntry,
   ShiftSwapRequest,
+  UserPayrollConfig,
   UserRole,
 } from '../types/hris';
 import { DEFAULT_PAYROLL_SETTINGS, calculatePayslip, formatRupiah } from './hrisLogic';
@@ -335,7 +336,8 @@ export function buildPayrollRecapExcel(
   attendance: AttendanceRecord[],
   overtimes: OvertimeRequest[],
   components: PayslipComponent[] = [],
-  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS
+  settings: PayrollSettings = DEFAULT_PAYROLL_SETTINGS,
+  userConfigs: Record<string, UserPayrollConfig> = {}
 ): string {
   return renderExcelWorkbook([
     {
@@ -346,14 +348,16 @@ export function buildPayrollRecapExcel(
         'Nama Karyawan',
         'Divisi',
         'Hari Hadir',
-        'Gaji Pokok',
+        'Target Hari Kerja',
+        'Gaji per Absen',
+        'Gaji Kehadiran',
         'Tunjangan Jabatan',
         'Tunjangan Makan & Transport',
         'Jam Lembur Disetujui',
         'Insentif Lembur',
         'Total Penerimaan',
-        'BPJS Kesehatan (1%)',
-        'BPJS TK JHT (2%)',
+        'BPJS Kesehatan',
+        'BPJS TK JHT',
         'Potongan Terlambat',
         'Total Potongan',
         'Take Home Pay',
@@ -366,7 +370,8 @@ export function buildPayrollRecapExcel(
           attendance,
           overtimes,
           components,
-          settings
+          settings,
+          userConfigs[emp.uid]
         );
         return [
           slip.periodLabel,
@@ -374,9 +379,11 @@ export function buildPayrollRecapExcel(
           emp.name,
           emp.division,
           slip.attendanceDays,
-          slip.baseSalary,
-          slip.positionAllowance,
-          slip.mealTransportAllowance,
+          slip.workDaysTarget,
+          slip.dailyBaseRate,
+          slip.earnedBasePay,
+          slip.earnedPositionAllowance,
+          slip.earnedMealAllowance,
           slip.overtimeHours,
           slip.overtimePay,
           slip.grossPay,
@@ -406,6 +413,7 @@ export interface FullExportDataset {
   /** Komponen gaji buatan HRD (BPJS, kasbon, tunjangan) agar rekap sama dengan slip karyawan. */
   payslipComponents?: PayslipComponent[];
   payrollSettings?: PayrollSettings;
+  userPayrollConfigs?: Record<string, UserPayrollConfig>;
 }
 
 /**
@@ -421,7 +429,8 @@ export function buildExcelWorkbookXml(data: FullExportDataset): string {
       data.attendance,
       data.overtimes,
       data.payslipComponents ?? [],
-      data.payrollSettings ?? DEFAULT_PAYROLL_SETTINGS
+      data.payrollSettings ?? DEFAULT_PAYROLL_SETTINGS,
+      data.userPayrollConfigs?.[emp.uid]
     );
     return [
       slip.periodLabel,
@@ -429,9 +438,9 @@ export function buildExcelWorkbookXml(data: FullExportDataset): string {
       emp.name,
       emp.division,
       slip.attendanceDays,
-      slip.baseSalary,
-      slip.positionAllowance,
-      slip.mealTransportAllowance,
+      slip.earnedBasePay,
+      slip.earnedPositionAllowance,
+      slip.earnedMealAllowance,
       slip.overtimeHours,
       slip.overtimePay,
       slip.grossPay,

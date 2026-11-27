@@ -3,7 +3,15 @@ export type UserRole = 'hrd' | 'supervisor' | 'employee';
 export type StandardDivision = 'HRD' | 'Security' | 'Cleaning Service' | 'Operasional' | 'Keuangan';
 export type Division = StandardDivision | string;
 
-export type ShiftCode = 'REGULER' | 'PAGI' | 'SIANG' | 'MALAM' | 'SECURITY24';
+/** Kode shift bawaan aplikasi. */
+export type BuiltinShiftCode = 'REGULER' | 'PAGI' | 'SIANG' | 'MALAM' | 'SECURITY24';
+
+/**
+ * Kode shift yang tersimpan di dokumen karyawan/jadwal/absensi: shift bawaan atau shift
+ * buatan HRD pada katalog shift. Kode selalu huruf kapital/angka/underscore maks. 16
+ * karakter supaya `isValidShift` di firestore.rules tetap bisa memeriksanya.
+ */
+export type ShiftCode = BuiltinShiftCode | (string & {});
 
 /** Komponen tanggal & waktu WIB (UTC+7) yang dipakai seluruh modul absensi dan jadwal. */
 export interface WibComponents {
@@ -28,7 +36,26 @@ export interface ShiftTemplate {
   label: string;
   startTime: string; // HH:mm
   endTime: string; // HH:mm
+  /** Toleransi keterlambatan absen masuk (menit setelah jam masuk). */
   toleranceMinutes: number;
+  /** Toleransi absen pulang: berapa menit sebelum jam pulang absen sudah dibuka. */
+  earlyOutMinutes: number;
+  /** Toleransi batas waktu pulang: berapa menit setelah jam pulang absen masih diterima. */
+  lateOutMinutes: number;
+  /** true = shift buatan HRD pada katalog (bisa diubah/dihapus), false/undefined = bawaan. */
+  custom?: boolean;
+}
+
+/** Isian form "Tambah/Ubah Shift" pada halaman Kelola Divisi. */
+export interface ShiftTemplateInput {
+  name: string;
+  startTime: string;
+  endTime: string;
+  toleranceMinutes: number;
+  /** Kosong = pakai bawaan 15 menit (data lama yang belum menyimpan nilai ini). */
+  earlyOutMinutes?: number;
+  /** Kosong = pakai bawaan 15 menit (data lama yang belum menyimpan nilai ini). */
+  lateOutMinutes?: number;
 }
 
 /** Jam masuk/pulang khusus divisi untuk satu shift (HH:mm). */
@@ -42,12 +69,13 @@ export interface DivisionShiftTime {
  * - earlyInMinutes: absen masuk dibuka sejak berapa menit sebelum jam masuk.
  * - lateInMinutes: keterlambatan yang masih dianggap tepat waktu (setelah jam masuk).
  * - earlyOutMinutes: absen pulang dibuka sejak berapa menit sebelum jam pulang.
- * Absen pulang setelah jam pulang tidak dibatasi (tidak terbatas).
+ * - lateOutMinutes: batas waktu absen pulang setelah jam pulang (menit).
  */
 export interface ShiftTolerance {
   earlyInMinutes: number;
   lateInMinutes: number;
   earlyOutMinutes: number;
+  lateOutMinutes: number;
 }
 
 /**
@@ -70,13 +98,102 @@ export interface DivisionShiftRule {
   /**
    * Toleransi absensi khusus divisi ini per shift (menit). Shift yang tidak
    * diisi memakai toleransi bawaan (masuk awal 60 menit, terlambat 10/15 menit,
-   * pulang awal 15 menit).
+   * pulang awal 15 menit, telat pulang 15 menit).
    */
   shiftTolerances?: Partial<Record<ShiftCode, ShiftTolerance>>;
   updatedAt?: string;
 }
 
-export interface Employee {
+export type EmployeeGender = 'Laki-laki' | 'Perempuan';
+
+/** Status perkawinan pada form Data Karyawan (dipakai bersama jumlah anak). */
+export type MaritalStatus = 'Belum Menikah' | 'Menikah' | 'Cerai Hidup' | 'Cerai Mati';
+
+export type EducationLevel = 'SD' | 'SMP' | 'SMA/SMK' | 'D3' | 'S1' | 'S2' | 'S3';
+
+export const MARITAL_STATUSES: MaritalStatus[] = [
+  'Belum Menikah',
+  'Menikah',
+  'Cerai Hidup',
+  'Cerai Mati',
+];
+
+export const EDUCATION_LEVELS: EducationLevel[] = ['SD', 'SMP', 'SMA/SMK', 'D3', 'S1', 'S2', 'S3'];
+
+export const GENDERS: EmployeeGender[] = ['Laki-laki', 'Perempuan'];
+
+/** Label peran pengguna untuk seluruh tampilan (badge, toast, tabel). */
+export const ROLE_LABELS: Record<UserRole, string> = {
+  hrd: 'Admin HRD',
+  supervisor: 'Supervisor',
+  employee: 'Karyawan',
+};
+
+/**
+ * Data pribadi kepegawaian yang diisi Admin HRD pada modal Detail Karyawan.
+ * Disimpan di koleksi terpisah `/employeeProfiles/{uid}` (bukan kolom `/employees`),
+ * lalu digabungkan ke objek Employee saat data dimuat supaya UI cukup membaca `employee.*`.
+ * Semua opsional: dokumen lama belum memilikinya ('' / angka 0 = belum diisi).
+ */
+export interface EmployeePersonalData {
+  /** NIK pada KTP: 16 digit angka; '' bila belum diisi. */
+  ktpNumber?: string;
+  /** Nomor Kartu Keluarga: 16 digit angka; '' bila belum diisi. */
+  kkNumber?: string;
+  /** Nama lengkap persis seperti tercetak di KTP. */
+  fullNameKtp?: string;
+  birthPlace?: string;
+  /** Tanggal lahir YYYY-MM-DD; usia dihitung dari sini, tidak disimpan. */
+  birthDate?: string;
+  /** Alamat lengkap sesuai KTP. */
+  ktpAddress?: string;
+  gender?: EmployeeGender | '';
+  /** Nama ibu kandung (syarat administrasi BPJS/kepegawaian). */
+  motherName?: string;
+  /** Wilayah penempatan kerja, mis. "Jakarta Selatan". */
+  workRegion?: string;
+  maritalStatus?: MaritalStatus | '';
+  /** Jumlah anak yang dimiliki. */
+  childrenCount?: number;
+  bankName?: string;
+  bankAccountNumber?: string;
+  bankAccountName?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  lastEducation?: EducationLevel | '';
+}
+
+/**
+ * Dokumen `/employeeProfiles/{uid}`: PII karyawan yang hanya ditulis Admin HRD.
+ * `updatedAt` diisi serverTimestamp saat menyimpan.
+ */
+export interface EmployeeProfile extends EmployeePersonalData {
+  uid: string;
+  updatedAt?: string;
+}
+
+/** Kolom `employees` dan `employeeProfiles` yang boleh ditulis Admin HRD (modal Detail & Ubah karyawan). */
+export type HrdEditableEmployeeFields = EmployeePersonalData &
+  Pick<
+    Employee,
+    | 'phone'
+    | 'address'
+    | 'position'
+    | 'division'
+    | 'role'
+    | 'shiftCode'
+    | 'supervisorUid'
+    | 'active'
+    | 'photoUrl'
+    | 'baseSalary'
+    | 'positionAllowance'
+    | 'mealTransportAllowance'
+  >;
+
+/** Jenis dokumen gambar karyawan yang diunggah HRD (satu dokumen Firestore per gambar). */
+export type EmployeeDocumentKind = 'ktp' | 'kk';
+
+export interface Employee extends EmployeePersonalData {
   uid: string;
   nik: string;
   name: string;
@@ -235,6 +352,18 @@ export interface ShiftSwapRequest {
   status: ApprovalStatus;
   createdLabel: string;
   reviewedBy: string;
+  /** UID rekan staf yang diajak tukar shift */
+  targetUid?: string;
+  /** Nama rekan staf yang diajak tukar */
+  targetEmployeeName?: string;
+  /** Shift rekan staf yang ditukar */
+  targetShiftCode?: ShiftCode;
+  /** Persetujuan tahap 1: respon dari rekan yang diajak tukar */
+  peerStatus?: 'Menunggu' | 'Disetujui' | 'Ditolak';
+  peerReviewedAt?: string;
+  /** Persetujuan tahap 2: respon atasan */
+  supervisorStatus?: ApprovalStatus;
+  hrdStatus?: ApprovalStatus;
 }
 
 export interface ExitClearanceItem {
@@ -269,14 +398,35 @@ export interface ScheduleEntry {
   location: string;
   notes: string;
   patrolCompleted: boolean;
+  /** UID atasan langsung (supervisor) pemilik jadwal; kosong jika langsung ke HRD. */
+  supervisorUid?: string;
+  /** true = petugas cadangan / backup; false/undefined = petugas jaga utama */
+  isBackup?: boolean;
+  /** UID staf yang digantikan apabila backup ini diaktifkan karena cuti/izin */
+  replacedUid?: string;
+  /** Nama staf yang digantikan */
+  replacedName?: string;
 }
 
 export interface PayslipBreakdown {
   periodLabel: string;
   periodKey: string; // YYYY-MM
+  /** Target gaji pokok bulanan (untuk workDaysTarget hari kerja). */
   baseSalary: number;
   positionAllowance: number;
   mealTransportAllowance: number;
+  /** Target hari kerja per bulan user ini (bawaan 26 hari). */
+  workDaysTarget: number;
+  /** Gaji pokok per 1x absen hadir (baseSalary / workDaysTarget). */
+  dailyBaseRate: number;
+  /** Total gaji + tunjangan per 1x absen hadir. */
+  dailyTotalRate: number;
+  /** Gaji pokok yang dibayarkan sesuai absen hadir di periode ini. */
+  earnedBasePay: number;
+  /** Tunjangan jabatan proporsional kehadiran. */
+  earnedPositionAllowance: number;
+  /** Tunjangan makan & transport proporsional kehadiran. */
+  earnedMealAllowance: number;
   overtimeHours: number;
   overtimePay: number;
   grossPay: number;
@@ -287,7 +437,7 @@ export interface PayslipBreakdown {
   totalDeductions: number;
   netPay: number;
   attendanceDays: number;
-  /** Rincian penerimaan (gaji pokok, tunjangan, lembur, komponen tambahan). */
+  /** Rincian penerimaan (gaji kehadiran, tunjangan, lembur, komponen tambahan). */
   earnings: PayslipLineItem[];
   /** Rincian potongan (BPJS, keterlambatan, komponen pengurang). */
   deductions: PayslipLineItem[];
@@ -342,6 +492,19 @@ export interface PayrollSettings {
   overtimeHourlyMultiplier: number;
   /** Nominal insentif per sesi lembur saat mode 'perSesi'. */
   overtimeSessionRate: number;
+  updatedAt?: string;
+}
+
+/** Pengaturan payroll khusus per karyawan (menimpa pengaturan global bila diisi). */
+export interface UserPayrollConfig {
+  /** Target hari kerja sebulan (bawaan 26). Gaji per absen = baseSalary / workDaysTarget. */
+  workDaysTarget: number;
+  bpjsKesehatanRate?: number;
+  bpjsKetenagakerjaanRate?: number;
+  lateDeductionPerMinute?: number;
+  overtimeRateMode?: OvertimeRateMode;
+  overtimeHourlyMultiplier?: number;
+  overtimeSessionRate?: number;
   updatedAt?: string;
 }
 

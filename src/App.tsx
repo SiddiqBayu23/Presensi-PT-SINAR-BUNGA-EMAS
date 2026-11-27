@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, X } from 'lucide-react';
 import { AdminDashboardView } from './roles/admin/AdminDashboardView';
 import { AttendanceModal } from './shared/AttendanceModal';
@@ -47,7 +47,92 @@ function HrisShell() {
   const [hrdSubTab, setHrdSubTab] = useState<HrdSubTab>('persetujuan');
   const [employeeSearchSeed, setEmployeeSearchSeed] = useState('');
   const [attendanceModalMode, setAttendanceModalMode] = useState<'in' | 'out' | null>(null);
+  const [employeeDetailUid, setEmployeeDetailUid] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // ------------------------------------------------------------------ riwayat tab
+  // Shell Android memanggil webView.goBack() saat tombol back ditekan dan hanya
+  // menutup aplikasi kalau riwayat WebView sudah habis. Navigasi tab di SPA ini
+  // murni state React, jadi setiap pindah tab (dan setiap modal absensi dibuka)
+  // harus menambah entri riwayat supaya back kembali ke tampilan sebelumnya.
+  const navDepthRef = useRef(0);
+  const activeTabRef = useRef<MainTab>('beranda');
+  const openEmployeeDetail = useCallback((uid: string) => {
+    navDepthRef.current += 1;
+    activeTabRef.current = 'hrd';
+    window.history.pushState({ sbmTab: 'hrd', sbmDetail: uid }, '');
+    setActiveTab('hrd');
+    setEmployeeDetailUid(uid);
+  }, []);
+
+  const closeEmployeeDetail = useCallback(() => {
+    if (window.history.state?.sbmDetail) window.history.back();
+    else setEmployeeDetailUid(null);
+  }, []);
+
+  const goToTab = useCallback((tab: MainTab) => {
+    if (tab === activeTabRef.current) return;
+    activeTabRef.current = tab;
+    navDepthRef.current += 1;
+    window.history.pushState({ sbmTab: tab }, '');
+    setActiveTab(tab);
+  }, []);
+
+  /** Buang semua entri riwayat tab dan kembali ke entri dasar (login/logout). */
+  const resetNavToBase = useCallback(() => {
+    const depth = navDepthRef.current;
+    navDepthRef.current = 0;
+    activeTabRef.current = 'beranda';
+    setAttendanceModalMode(null);
+    setEmployeeDetailUid(null);
+    setActiveTab('beranda');
+    if (depth > 0) {
+      // popstate pada entri dasar yang memulihkan tab 'beranda'.
+      window.history.go(-depth);
+      return;
+    }
+    window.history.replaceState({ sbmTab: 'beranda' }, '');
+  }, []);
+
+  const openAttendanceModal = useCallback((mode: 'in' | 'out') => {
+    navDepthRef.current += 1;
+    window.history.pushState({ sbmTab: activeTabRef.current, sbmModal: mode }, '');
+    setAttendanceModalMode(mode);
+  }, []);
+
+  const closeAttendanceModal = useCallback(() => {
+    setAttendanceModalMode(null);
+    // Entri modal dibuang lewat back(); popstate hanya menyetel ulang state yang
+    // sama, jadi menutup lewat tombol X tidak meninggalkan entri riwayat hantu.
+    if (window.history.state?.sbmModal) window.history.back();
+  }, []);
+
+  useEffect(() => {
+    // Entri pertama riwayat = tab awal; back dari entri ini berarti keluar aplikasi.
+    if (window.history.state?.sbmTab !== activeTabRef.current) {
+      window.history.replaceState({ sbmTab: activeTabRef.current }, '');
+    }
+
+    const handlePopState = (event: PopStateEvent) => {
+      const state = event.state as { sbmTab?: MainTab; sbmDetail?: string } | null;
+       const tab = state?.sbmTab ?? 'beranda';
+       navDepthRef.current = Math.max(0, navDepthRef.current - 1);
+       activeTabRef.current = tab;
+       setAttendanceModalMode(null);
+      setEmployeeDetailUid(state?.sbmDetail ?? null);
+       setActiveTab(tab);
+     };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const sessionActive = Boolean(currentUser && firebaseUser && !needsEmailVerification);
+
+  useEffect(() => {
+    // Sesi berakhir: entri riwayat tab lama dibuang supaya back di layar login
+    // langsung keluar aplikasi, bukan memutar ulang tab sesi sebelumnya.
+    if (!sessionActive) resetNavToBase();
+  }, [sessionActive, resetNavToBase]);
 
   // Badge = pengajuan yang memang bisa diputuskan user ini (HRD: semua, supervisor: bawahan se-divisi).
   const pendingApprovalsCount = useMemo(
@@ -65,17 +150,17 @@ function HrisShell() {
   };
 
   const handleLoginSuccess = () => {
-    setActiveTab('beranda');
+    resetNavToBase();
   };
 
   const navigateSubmission = (sub: SubmissionSubTab) => {
     setSubmissionSubTab(sub);
-    setActiveTab('pengajuan');
+    goToTab('pengajuan');
   };
 
   const navigateDocument = (sub: DocumentSubTab) => {
     setDocumentSubTab(sub);
-    setActiveTab('dokumen');
+    goToTab('dokumen');
   };
 
   // Auth Firebase belum selesai dipulihkan atau profil karyawan sedang dimuat.
@@ -102,10 +187,10 @@ function HrisShell() {
 
   const handleSelectTab = (tab: MainTab) => {
     if (tab === 'hrd' && !canAccessHrdPanel) {
-      setActiveTab('beranda');
+      goToTab('beranda');
       return;
     }
-    setActiveTab(tab);
+    goToTab(tab);
   };
 
   return (
@@ -141,7 +226,7 @@ function HrisShell() {
         {safeActiveTab === 'beranda' &&
           (isHrd ? (
             <AdminDashboardView
-              onOpenAttendance={(mode) => setAttendanceModalMode(mode)}
+              onOpenAttendance={openAttendanceModal}
               onNavigateTab={handleSelectTab}
               onOpenHrdSubTab={(sub) => {
                 setHrdSubTab(sub);
@@ -162,11 +247,11 @@ function HrisShell() {
               }}
               onNavigateTab={handleSelectTab}
               onNavigateSubmission={navigateSubmission}
-              onOpenAttendance={(mode) => setAttendanceModalMode(mode)}
+              onOpenAttendance={openAttendanceModal}
             />
           ) : (
             <DashboardHome
-              onOpenAttendance={(mode) => setAttendanceModalMode(mode)}
+              onOpenAttendance={openAttendanceModal}
               onNavigateTab={handleSelectTab}
               onNavigateSubmission={navigateSubmission}
               onNavigateDocument={navigateDocument}
@@ -174,7 +259,7 @@ function HrisShell() {
           ))}
 
         {safeActiveTab === 'presensi' && (
-          <PresensiView onOpenAttendance={(mode) => setAttendanceModalMode(mode)} />
+          <PresensiView onOpenAttendance={openAttendanceModal} />
         )}
 
         {safeActiveTab === 'schedule' && (
@@ -200,6 +285,9 @@ function HrisShell() {
             activeSubTab={hrdSubTab}
             onChangeSubTab={setHrdSubTab}
             employeeSearchSeed={employeeSearchSeed}
+            detailUid={employeeDetailUid}
+            onOpenDetail={openEmployeeDetail}
+            onCloseDetail={closeEmployeeDetail}
           />
         )}
 
@@ -221,9 +309,9 @@ function HrisShell() {
       {attendanceModalMode && (
         <AttendanceModal
           mode={attendanceModalMode}
-          onClose={() => setAttendanceModalMode(null)}
+          onClose={closeAttendanceModal}
           onSuccess={(msg) => {
-            setAttendanceModalMode(null);
+            closeAttendanceModal();
             showToast(msg);
           }}
         />

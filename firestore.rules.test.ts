@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import { buildShiftCode } from './src/utils/hrisLogic';
 
 const rulesPath = fs.existsSync('firestore.rules') ? 'firestore.rules' : 'DRAFT_firestore.rules';
 const rulesText = fs.readFileSync(rulesPath, 'utf8');
@@ -18,6 +19,8 @@ test('Every collection in firebase-blueprint.json has an explicit match block in
   const expectedCollections = [
     'admins',
     'employees',
+    'employeeProfiles',
+    'employeeDocuments',
     'attendance',
     'leaves',
     'overtimes',
@@ -96,13 +99,12 @@ test('3-role supervisor routing: validasi atasan, tier review, dan batas payroll
   // Tier update supervisor (4 koleksi) + jalur get (4 koleksi) yang dirutekan ke dirinya.
   const updateTiers = rulesText.match(/routedToSupervisor\(existing\(\)\)\s*&&/g) ?? [];
   assert.equal(updateTiers.length, 4);
-  // Jalur baca: 4 allow get via routedToSupervisor() + 6 allow list via field supervisorUid
-  // (employees, attendance, dan 4 koleksi pengajuan).
+  // Jalur baca: 4 allow get via routedToSupervisor() + 7 allow list via field supervisorUid
+  // (employees, attendance, 4 koleksi pengajuan, dan schedules).
   const getPaths = rulesText.match(/routedToSupervisor\(existing\(\)\)\s*\);/g) ?? [];
   assert.equal(getPaths.length, 4);
   const listPaths = rulesText.match(/resource\.data\.supervisorUid == request\.auth\.uid/g) ?? [];
-  assert.equal(listPaths.length, 6);
-
+  assert.equal(listPaths.length, 7);
   // Absen masuk memaku supervisorUid ke atasan pada profil karyawan sendiri.
   assert.match(
     rulesText,
@@ -122,4 +124,193 @@ test('3-role supervisor routing: validasi atasan, tier review, dan batas payroll
     rulesText,
     /isSupervisor\(\)\s*&&\s*existing\(\)\.get\('supervisorUid', ''\) == request\.auth\.uid/
   );
+  assert.match(rulesText, /function isScheduleSupervisor\(uid\)/);
+  assert.match(rulesText, /isScheduleSupervisor\(incoming\(\)\.uid\)/);
+  assert.match(rulesText, /isScheduleSupervisor\(existing\(\)\.uid\)/);
+  assert.match(rulesText, /\(resource == null && isVerified\(\)\)/);
+});
+
+test('Gerbang nonaktif: setiap jalur tulis mandiri karyawan dijaga isActiveEmployee()', () => {
+  // Helper wajib menolak secara default: `active` tidak ada -> false (jangan pakai != false),
+  // dan tetap memverifikasi identitas pemanggil + keberadaan dokumen kepegawaiannya.
+  assert.match(
+    rulesText,
+    /function isActiveEmployee\(\)\s*\{\s*return isVerified\(\)\s*&&\s*employeeExists\(request\.auth\.uid\)\s*&&\s*get\(\/databases\/\$\(database\)\/documents\/employees\/\$\(request\.auth\.uid\)\)\.data\.active == true;\s*\}/
+  );
+
+  const lines = rulesText.split(/\r?\n/);
+  const selfService = ['employees', 'attendance', 'leaves', 'overtimes', 'shiftSwaps', 'exitClearances', 'schedules'];
+  for (const collection of selfService) {
+    const start = lines.findIndex((line) => new RegExp(`^    match /${collection}/\\{`).test(line));
+    assert.ok(start >= 0, `match block /${collection} tidak ditemukan`);
+    const end = lines.findIndex((line, index) => index > start && line === '    }');
+    assert.ok(end > start, `match block /${collection} tidak tertutup`);
+    const block = lines.slice(start, end + 1).join('\n');
+    assert.match(
+      block,
+      /isActiveEmployee\(\)/,
+      `Jalur tulis mandiri /${collection} tidak dijaga isActiveEmployee() — karyawan nonaktif (active: false) bisa menulis`
+    );
+  }
+});
+
+test('Gerbang shift menerima kode katalog buatan HRD, bukan hanya 5 shift bawaan', () => {
+  const body = rulesText.match(/function isValidShift\(shift\)\s*\{([\s\S]*?)\n    \}/);
+  assert.ok(body, 'function isValidShift tidak ditemukan di firestore.rules');
+  const source = body![1];
+
+  // Kode shift kustom dibuat buildShiftCode() (huruf besar/angka/underscore) — pola wajib,
+  // bukan daftar tertutup, supaya shift baru tidak ditolak produksi sebelum sempat dipakai.
+  assert.doesNotMatch(source, /shift in \[/, 'isValidShift masih memakai daftar tertutup');
+  assert.match(source, /shift\.size\(\) >= 2 && shift\.size\(\) <= 16/, 'batas panjang shift hilang');
+  const pattern = source.match(/shift\.matches\('([^']+)'\)/);
+  assert.ok(pattern, 'pola kode shift tidak ditemukan di isValidShift');
+  const regex = new RegExp(pattern![1].replace(/\\\\/g, '\\'));
+  // isValidShift = batas panjang (`size()`) DAN pola; keduanya wajib dievaluasi bersama.
+  const accepts = (code: string) => code.length >= 2 && code.length <= 16 && regex.test(code);
+
+  const accepted = [
+    'REGULER',
+    'PAGI',
+    'SIANG',
+    'MALAM',
+    'SECURITY24',
+    'SHIFT_SORE',
+    'SHIFT_2',
+    'A1',
+    'JAGA_MALAM_2026',
+  ];
+  for (const code of accepted) {
+    assert.ok(accepts(code), `kode shift "${code}" ditolak oleh isValidShift`);
+  }
+
+  const rejected = [
+    'A', // terlalu pendek
+    'SHIFT_', // underscore di akhir
+    'SHIFT SORE', // spasi
+    'shift_sore', // huruf kecil
+    'SHIFT-SORE', // tanda hubung
+    'SHIFT_SORE_1234567', // > 16 karakter
+    "REGULER' OR 1==1",
+  ];
+  for (const code of rejected) {
+    assert.ok(!accepts(code), `kode shift tidak sah "${code}" diterima isValidShift`);
+  }
+
+  // Kode hasil buildShiftCode untuk nama bebas HRD wajib lolos pola yang sama.
+  for (const name of ['Shift Sore', 'Jaga Malam 2', 'IT Support', 'Shift Jumat Pendek']) {
+    const code = buildShiftCode(name, []);
+    assert.ok(accepts(code), `hasil buildShiftCode("${name}") = "${code}" ditolak isValidShift`);
+  }
+});
+
+test('Data pribadi karyawan tinggal di /employeeProfiles dan dapat ditulis pemilik atau HRD', () => {
+  const personalKeys = [
+    'ktpNumber',
+    'kkNumber',
+    'fullNameKtp',
+    'birthPlace',
+    'birthDate',
+    'ktpAddress',
+    'gender',
+    'motherName',
+    'workRegion',
+    'maritalStatus',
+    'childrenCount',
+    'bankName',
+    'bankAccountNumber',
+    'bankAccountName',
+    'emergencyContactName',
+    'emergencyContactPhone',
+    'lastEducation',
+  ];
+
+  // /employees bebas PII: anggaran 1000 ekspresi rule per request sudah penuh tanpa
+  // kolom pribadi, dan dokumen ini juga dibaca supervisor untuk roster tim.
+  const employeeValidator = rulesText.match(/function isValidEmployee\(data\) \{([\s\S]*?)\n    \}/);
+  assert.ok(employeeValidator, 'function isValidEmployee tidak ditemukan');
+  for (const key of personalKeys) {
+    assert.ok(
+      !employeeValidator![1].includes(`'${key}'`),
+      `kolom PII '${key}' tidak boleh lagi ada di isValidEmployee`
+    );
+  }
+
+  const profileValidator = rulesText.match(
+    /function isValidEmployeeProfile\(data\) \{([\s\S]*?)\n    \}/
+  );
+  assert.ok(profileValidator, 'function isValidEmployeeProfile tidak ditemukan');
+  for (const key of personalKeys) {
+    assert.ok(
+      profileValidator![1].includes(`'${key}'`),
+      `hasOnly isValidEmployeeProfile tidak memuat '${key}'`
+    );
+  }
+
+  // NIK/KK wajib tepat 16 digit atau kosong; tanggal lahir wajib ISO; enum tertutup.
+  const sixteenDigits = rulesText.match(/function isOptionalSixteenDigits\(value\) \{([\s\S]*?)\n    \}/);
+  assert.ok(sixteenDigits, 'function isOptionalSixteenDigits tidak ditemukan');
+  assert.match(sixteenDigits![1], /value\.size\(\) == 16/);
+  assert.match(sixteenDigits![1], /value\.matches\('\^\[0-9\]\+\$'\)/);
+  assert.match(profileValidator![1], /isOptionalSixteenDigits\(data\.get\('ktpNumber', ''\)\)/);
+  assert.match(profileValidator![1], /isOptionalSixteenDigits\(data\.get\('kkNumber', ''\)\)/);
+  assert.match(
+    profileValidator![1],
+    /isOptionalEnum\(data\.get\('gender', ''\), \['', 'Laki-laki', 'Perempuan'\]\)/
+  );
+  assert.match(profileValidator![1], /'Cerai Hidup', 'Cerai Mati'\]\)/);
+  assert.match(profileValidator![1], /'SMA\/SMK', 'D3', 'S1', 'S2', 'S3'\]\)/);
+  assert.match(profileValidator![1], /data\.get\('childrenCount', 0\) is int/);
+  assert.match(profileValidator![1], /isValidIsoDate\(data\.get\('birthDate', ''\)\)/);
+
+  const block = rulesText.match(/match \/employeeProfiles\/\{employeeId\} \{([\s\S]*?)\n    \}/);
+  assert.ok(block, 'match block /employeeProfiles tidak ditemukan');
+  const source = block![1];
+  assert.doesNotMatch(source, /allow (read|write)\b/, 'dilarang ada allow read/write menyeluruh');
+  assert.match(source, /allow get: if isValidId\(employeeId\) && \(isOwner\(employeeId\) \|\| isAdmin\(\)\);/);
+  assert.match(
+    source,
+    /allow list: if isVerified\(\) &&\s*\(resource\.data\.uid == request\.auth\.uid \|\| isBootstrapAdmin\(\)\);/
+  );
+  assert.match(source, /\(isAdmin\(\) \|\| isOwner\(employeeId\)\)/);
+  assert.match(source, /incoming\(\)\.uid == employeeId/);
+  assert.match(source, /incoming\(\)\.uid == existing\(\)\.uid/);
+  assert.match(source, /isValidEmployeeProfile\(incoming\(\)\)/);
+  assert.match(source, /incoming\(\)\.updatedAt == request\.time/);
+  assert.match(source, /allow delete: if false;/);
+
+  // Tier HRD pada /employees tidak lagi memuat kolom PII.
+  const hrdTier = rulesText.match(
+    /isAdmin\(\)\s*&&\s*isValidSupervisorAssignment\(incoming\(\)\)\s*&&\s*incoming\(\)\.diff\(existing\(\)\)\.affectedKeys\(\)\.hasOnly\(\[([\s\S]*?)\]\)/
+  );
+  assert.ok(hrdTier, 'tier HRD pada rule update employees tidak ditemukan');
+  for (const key of personalKeys) {
+    assert.ok(
+      !hrdTier![1].includes(`'${key}'`),
+      `affectedKeys tier HRD masih memuat kolom PII '${key}'`
+    );
+  }
+});
+test('Scan KTP/KK: pemilik atau HRD dapat mengelola dokumen pada id "{uid}_{kind}"', () => {
+  const block = rulesText.match(/match \/employeeDocuments\/\{documentId\} \{([\s\S]*?)\n    \}/);
+  assert.ok(block, 'match block /employeeDocuments tidak ditemukan');
+  const source = block![1];
+
+  assert.doesNotMatch(source, /allow (read|write)\b/, 'dilarang ada allow read/write menyeluruh');
+  assert.match(source, /allow get: if isValidId\(documentId\) &&\s*\(isOwner\(existing\(\)\.uid\) \|\| isAdmin\(\)\);/);
+  assert.match(
+    source,
+    /allow list: if isVerified\(\) &&\s*\(resource\.data\.uid == request\.auth\.uid \|\| isBootstrapAdmin\(\)\);/
+  );
+  assert.match(source, /documentId == incoming\(\)\.uid \+ '_' \+ incoming\(\)\.kind/);
+  assert.match(source, /incoming\(\)\.updatedAt == request\.time/);
+  assert.match(source, /\(isAdmin\(\) \|\| isOwner\(incoming\(\)\.uid\)\)/);
+  assert.match(source, /allow delete: if isValidId\(documentId\) &&\s*\(isAdmin\(\) \|\| isOwner\(existing\(\)\.uid\)\);/);
+
+  const validator = rulesText.match(/function isValidEmployeeDocument\(data\) \{([\s\S]*?)\n    \}/);
+  assert.ok(validator, 'function isValidEmployeeDocument tidak ditemukan');
+  assert.match(validator![1], /dataUrl\.size\(\) <= 700000/);
+  assert.match(validator![1], /dataUrl\.matches\('\^data:image\/jpeg;base64,'\)/);
+  assert.match(validator![1], /data\.kind in \['ktp', 'kk'\]/);
+  assert.match(validator![1], /hasOnly\(\['uid', 'kind', 'dataUrl', 'createdAt', 'updatedAt'\]\)/);
 });

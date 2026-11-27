@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   CalendarClock,
   CalendarDays,
@@ -13,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useHris } from '../../context/HrisContext';
 import type { MainTab, ShiftCode, SubmissionSubTab } from '../../types/hris';
+import { checkScheduleGaps } from '../../utils/hrisLogic';
 import { DashboardCalendar } from '../../shared/DashboardCalendar';
 import { TodoListWidget } from '../../shared/TodoListWidget';
 
@@ -83,6 +85,17 @@ export function SupervisorDashboardView({
     shiftSwaps.filter((s) => s.uid === meUid && s.status === 'Menunggu').length +
     exitClearances.filter((e) => e.uid === meUid && e.status === 'Menunggu').length;
 
+  const gapWarnings = useMemo(() => {
+    if (!currentUser?.division) return [];
+    return checkScheduleGaps({
+      divisions: [currentUser.division],
+      employees,
+      schedules,
+      startDate: wibNow.isoDate,
+      daysCount: 7,
+    });
+  }, [currentUser?.division, employees, schedules, wibNow.isoDate]);
+
   if (!currentUser) return null;
 
   const quickActions: Array<{
@@ -92,6 +105,13 @@ export function SupervisorDashboardView({
     accent: string;
     onClick: () => void;
   }> = [
+    {
+      label: 'Jadwal Divisi',
+      sub: gapWarnings.length > 0 ? `${gapWarnings.length} peringatan` : 'Atur jadwal & backup',
+      icon: <CalendarDays className="w-5 h-5 text-[#C69214]" />,
+      accent: gapWarnings.length > 0 ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200/80',
+      onClick: onOpenPanel,
+    },
     {
       label: 'Persetujuan Tim',
       sub: `${teamPending} menunggu`,
@@ -205,6 +225,30 @@ export function SupervisorDashboardView({
           <div className="mt-1 text-[11px] text-slate-500">Menunggu persetujuan HRD</div>
         </div>
       </section>
+
+      {/* Warning Banner Jadwal Divisi */}
+      {gapWarnings.length > 0 && (
+        <section className="rounded-3xl border border-amber-300 bg-amber-50/70 p-4 text-amber-950 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+            <div>
+              <div className="text-xs font-extrabold text-amber-900">
+                Peringatan: Ada {gapWarnings.length} hari yang belum memiliki jadwal / staf backup di Divisi {currentUser.division}!
+              </div>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Pastikan seluruh shift memiliki staf jaga dan staf cadangan (backup).
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenPanel}
+            className="px-3 py-1.5 rounded-xl bg-[#0B2453] text-white text-xs font-bold shrink-0 hover:bg-[#163A7A] cursor-pointer"
+          >
+            Atur Jadwal
+          </button>
+        </section>
+      )}
 
       <section aria-label="Aksi cepat supervisor" className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         {quickActions.map((action) => (

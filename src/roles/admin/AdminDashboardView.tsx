@@ -21,12 +21,12 @@ import {
 import { useHris } from '../../context/HrisContext';
 import type { Division, MainTab, ShiftCode } from '../../types/hris';
 import {
-  SHIFT_TEMPLATES,
   calculatePayslip,
   defaultShiftForDivision,
   formatDuration,
   formatRupiah,
   resolveDivisionShiftRule,
+  shiftTemplateName,
 } from '../../utils/hrisLogic';
 import type { HrdSubTab } from './HrdView';
 import { DashboardCalendar } from '../../shared/DashboardCalendar';
@@ -69,6 +69,7 @@ export function AdminDashboardView({
     divisionShiftRules,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
     addDivision,
     shiftTemplateFor,
   } = useHris();
@@ -83,9 +84,9 @@ export function AdminDashboardView({
     email: '',
     name: '',
     position: '',
-    division: 'Security' as Division,
-    shiftCode: 'PAGI' as ShiftCode,
-    initialPassword: '0909',
+    division: (divisions[0] ?? '') as Division,
+    shiftCode: defaultShiftForDivision(divisions[0] ?? 'HRD', divisionShiftRules),
+    initialPassword: '',
   });
 
   const todayAttendance = useMemo(
@@ -119,7 +120,8 @@ export function AdminDashboardView({
         attendance,
         overtimes,
         payslipComponents,
-        payrollSettings
+        payrollSettings,
+        userPayrollConfigs[emp.uid]
       );
       return sum + slip.netPay;
     }, 0);
@@ -129,6 +131,7 @@ export function AdminDashboardView({
     overtimes,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
     wibNow.periodKey,
     wibNow.periodLabel,
   ]);
@@ -176,22 +179,30 @@ export function AdminDashboardView({
     onShowToast('Berhasil terhubung ke Cloud Firestore PT Sinar Bunga Mas.');
   };
 
+  const activeFormDivision = divisions.includes(empForm.division)
+    ? empForm.division
+    : (divisions[0] ?? '');
+
   const handleQuickAddEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddingEmp(true);
     try {
-      const res = await addEmployeeByHrd(empForm);
+      const res = await addEmployeeByHrd({
+        ...empForm,
+        division: activeFormDivision,
+      });
       if (!res.ok) {
         onShowToast(res.error);
         return;
       }
+      const nextDiv = divisions[0] ?? '';
       setEmpForm({
         email: '',
         name: '',
         position: '',
-        division: 'Security',
-        shiftCode: 'PAGI',
-        initialPassword: '0909',
+        division: nextDiv,
+        shiftCode: defaultShiftForDivision(nextDiv || 'HRD', divisionShiftRules),
+        initialPassword: '',
       });
       setShowQuickAdd(false);
       onShowToast(`Karyawan ${res.employee.name} (${res.employee.nik}) berhasil ditambahkan.`);
@@ -400,7 +411,7 @@ export function AdminDashboardView({
             />
             <select
               aria-label="Divisi karyawan baru"
-              value={empForm.division}
+              value={activeFormDivision}
               onChange={(e) => {
                 const nextDivision = e.target.value as Division;
                 setEmpForm({
@@ -411,11 +422,15 @@ export function AdminDashboardView({
               }}
               className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm"
             >
-              {divisions.map((div) => (
-                <option key={div} value={div}>
-                  {div}
-                </option>
-              ))}
+              {divisions.length === 0 ? (
+                <option value="">-- Buat divisi dulu di Kelola Divisi --</option>
+              ) : (
+                divisions.map((div) => (
+                  <option key={div} value={div}>
+                    {div}
+                  </option>
+                ))
+              )}
             </select>
             <select
               aria-label="Shift karyawan baru"
@@ -423,9 +438,9 @@ export function AdminDashboardView({
               onChange={(e) => setEmpForm({ ...empForm, shiftCode: e.target.value as ShiftCode })}
               className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm"
             >
-              {resolveDivisionShiftRule(empForm.division, divisionShiftRules).allowedShiftCodes.map(
+              {resolveDivisionShiftRule(activeFormDivision || 'HRD', divisionShiftRules).allowedShiftCodes.map(
                 (code) => {
-                  const tpl = shiftTemplateFor(code, empForm.division);
+                  const tpl = shiftTemplateFor(code, activeFormDivision || 'HRD');
                   return (
                     <option key={code} value={code}>
                       {tpl.name} ({tpl.startTime}–{tpl.endTime})
@@ -436,7 +451,7 @@ export function AdminDashboardView({
             </select>
             <button
               type="submit"
-              disabled={addingEmp}
+              disabled={addingEmp || divisions.length === 0 || !activeFormDivision}
               className="h-11 rounded-xl bg-[#0B2453] hover:bg-[#163A7A] text-white text-sm font-bold cursor-pointer disabled:opacity-60"
             >
               {addingEmp ? 'Menyimpan...' : 'Simpan Karyawan'}
@@ -631,7 +646,7 @@ export function AdminDashboardView({
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-[10px]">
                     <span className="font-mono font-bold text-slate-700">
-                      {SHIFT_TEMPLATES[emp.shiftCode]?.name ?? emp.shiftCode}
+                      {shiftTemplateName(emp.shiftCode)}
                     </span>
                     <span
                       className={`font-bold ${

@@ -5,6 +5,8 @@ import {
   DEFAULT_PAYROLL_SETTINGS,
   FALLBACK_DIVISION_SHIFT_CODES,
   SHIFT_TEMPLATES,
+  allShiftTemplates,
+  buildShiftTemplate,
   calculateDistanceMeters,
   calculateInclusiveDays,
   calculateLateMinutes,
@@ -16,19 +18,26 @@ import {
   findScheduleConflict,
   formatReportTypesLabel,
   formatRupiah,
+  formatThousands,
   generateEmployeeNik,
   getDivisionCompensationDefaults,
   getWibComponents,
   isValidEmailAddress,
   requiredReportFormats,
+  registerHiddenShiftTemplates,
+  registerShiftTemplates,
   resolveDivisionShiftRule,
   resolveShiftTolerance,
   shiftsConflictOnDates,
   resolvePayslipComponentAmount,
   sanitizeString,
+  schedulesMirroringProfileShift,
   validateClockIn,
   validateClockOut,
   validateShiftSwap,
+  getStaffDutyInfo,
+  getShiftRostersForDate,
+  checkScheduleGaps,
 } from './hrisLogic';
 import type { ShiftSwapValidationInput } from './hrisLogic';
 import type {
@@ -102,17 +111,21 @@ test('resolveShiftTolerance uses defaults and per-division overrides', () => {
     earlyInMinutes: 60,
     lateInMinutes: 10,
     earlyOutMinutes: 15,
+    lateOutMinutes: 15,
   });
   const override = {
     division: 'Operasional',
     allowedShiftCodes: ['REGULER'] as ShiftCode[],
     defaultShiftCode: 'REGULER' as ShiftCode,
-    shiftTolerances: { REGULER: { earlyInMinutes: 120, lateInMinutes: 30, earlyOutMinutes: 5 } },
+    shiftTolerances: {
+      REGULER: { earlyInMinutes: 120, lateInMinutes: 30, earlyOutMinutes: 5, lateOutMinutes: 20 },
+    },
   };
   assert.deepEqual(resolveShiftTolerance('REGULER', override), {
     earlyInMinutes: 120,
     lateInMinutes: 30,
     earlyOutMinutes: 5,
+    lateOutMinutes: 20,
   });
 });
 
@@ -126,14 +139,29 @@ test('validateClockIn blocks only before the early window', () => {
   assert.equal(validateClockIn('00:30:00', 'MALAM').ok, true);
 });
 
-test('validateClockOut blocks only before the early window, late is unlimited', () => {
-  // Jam pulang 17:00, toleransi pulang awal 15 menit → dibuka 16:45.
+test('validateClockOut enforces early and late clock-out tolerance windows', () => {
+  // Jam pulang 17:00, toleransi pulang awal 15 menit (16:45) & telat pulang 15 menit (17:15).
   assert.equal(validateClockOut('16:45:00', 'REGULER').ok, true);
   assert.equal(validateClockOut('16:44:00', 'REGULER').ok, false);
-  assert.equal(validateClockOut('23:00:00', 'REGULER').ok, true);
-  // Shift malam 23:00-07:00: pulang 06:50 masih dalam toleransi 15 menit.
+  assert.equal(validateClockOut('17:15:00', 'REGULER').ok, true);
+  assert.equal(validateClockOut('17:16:00', 'REGULER').ok, false);
+  assert.equal(validateClockOut('23:00:00', 'REGULER').ok, false);
+  // Shift malam 23:00-07:00: pulang 06:45-07:15 diterima, di luar rentang ditolak.
   assert.equal(validateClockOut('06:50:00', 'MALAM').ok, true);
   assert.equal(validateClockOut('06:40:00', 'MALAM').ok, false);
+  assert.equal(validateClockOut('07:15:00', 'MALAM').ok, true);
+  assert.equal(validateClockOut('07:16:00', 'MALAM').ok, false);
+  // Override divisi bisa memperpanjang batas waktu pulang.
+  const extendedOut = {
+    division: 'Operasional',
+    allowedShiftCodes: ['REGULER'] as ShiftCode[],
+    defaultShiftCode: 'REGULER' as ShiftCode,
+    shiftTolerances: {
+      REGULER: { earlyInMinutes: 60, lateInMinutes: 10, earlyOutMinutes: 15, lateOutMinutes: 45 },
+    },
+  };
+  assert.equal(validateClockOut('17:45:00', 'REGULER', extendedOut).ok, true);
+  assert.equal(validateClockOut('17:46:00', 'REGULER', extendedOut).ok, false);
 });
 
 test('calculateWorkMinutes supports standard and overnight shifts', () => {
@@ -218,6 +246,67 @@ test('calculatePayslip sums allowances, approved overtime, and deductions by UID
   assert.equal(slip.bpjsKetenagakerjaan, 170000);
   assert.equal(slip.netPay, slip.grossPay - slip.totalDeductions);
   assert.equal(formatRupiah(1500000), 'Rp 1.500.000');
+  assert.equal(formatThousands(5_000_000), '5.000.000');
+  assert.equal(formatThousands('005000000'), '5.000.000');
+  assert.equal(formatThousands(''), '');
+});
+
+test('calculatePayslip membayar gaji berdasar jumlah absen hadir (contoh 26 hari kerja = 5 juta)', () => {
+  const staff: Employee = {
+    ...sampleEmployee,
+    uid: 'uid_staff_5jt',
+    baseSalary: 5_000_000,
+    positionAllowance: 0,
+    mealTransportAllowance: 0,
+  };
+
+  // 0 hari hadir -> gaji hadir Rp 0 dan tidak ada potongan BPJS negatif
+  const zeroSlip = calculatePayslip(staff, '2026-11', 'November 2026', [], []);
+  assert.equal(zeroSlip.dailyBaseRate, 192308);
+  assert.equal(zeroSlip.workDaysTarget, 26);
+  assert.equal(zeroSlip.earnedBasePay, 0);
+  assert.equal(zeroSlip.netPay, 0);
+
+  // 1 hari hadir -> 5.000.000 / 26 = Rp 192.308
+  const oneDayAtt: AttendanceRecord[] = [
+    {
+      id: 'att-1',
+      uid: staff.uid,
+      nik: staff.nik,
+      employeeName: staff.name,
+      division: staff.division,
+      date: '2026-11-02',
+      shiftCode: 'REGULER',
+      clockInTime: '08:00:00',
+      clockInPhotoVerified: true,
+      clockInLat: 0,
+      clockInLng: 0,
+      clockInAddress: 'Kantor',
+      clockInDistanceMeters: 5,
+      lateMinutes: 0,
+      clockOutTime: '17:00:00',
+      clockOutPhotoVerified: true,
+      clockOutLat: 0,
+      clockOutLng: 0,
+      clockOutAddress: 'Kantor',
+      workMinutes: 540,
+      status: 'Selesai',
+    },
+  ];
+  const oneSlip = calculatePayslip(staff, '2026-11', 'November 2026', oneDayAtt, []);
+  assert.equal(oneSlip.earnedBasePay, 192308);
+
+  // 26 hari hadir penuh -> pas Rp 5.000.000 dikurangi BPJS (1% + 2% = Rp 150.000) -> Rp 4.850.000
+  const fullAtt: AttendanceRecord[] = Array.from({ length: 26 }, (_, i) => ({
+    ...oneDayAtt[0],
+    id: `att-${i}`,
+    date: `2026-11-${String(i + 1).padStart(2, '0')}`,
+  }));
+  const fullSlip = calculatePayslip(staff, '2026-11', 'November 2026', fullAtt, []);
+  assert.equal(fullSlip.earnedBasePay, 5_000_000);
+  assert.equal(fullSlip.bpjsKesehatan, 50_000);
+  assert.equal(fullSlip.bpjsKetenagakerjaan, 100_000);
+  assert.equal(fullSlip.netPay, 4_850_000);
 });
 
 test('resolveDivisionShiftRule enforces 24-hour Security and short Cleaning Service windows', () => {
@@ -232,6 +321,77 @@ test('resolveDivisionShiftRule enforces 24-hour Security and short Cleaning Serv
   // Divisi buatan HRD tanpa aturan khusus memakai fallback, bukan aturan Security.
   const custom = resolveDivisionShiftRule('Gudang');
   assert.deepEqual(custom.allowedShiftCodes, FALLBACK_DIVISION_SHIFT_CODES);
+});
+
+test('shift bawaan yang dihapus hilang dari katalog & pilihan divisi, lalu pulih lagi', () => {
+  registerHiddenShiftTemplates([]);
+  assert.equal(allShiftTemplates().some((tpl) => tpl.code === 'PAGI'), true);
+
+  registerHiddenShiftTemplates(['PAGI']);
+  // Hilang dari katalog...
+  assert.equal(allShiftTemplates().some((tpl) => tpl.code === 'PAGI'), false);
+  // ...dan tidak lagi ditawarkan ke divisi yang memakainya (Cleaning Service hanya PAGI).
+  const cleaning = resolveDivisionShiftRule('Cleaning Service');
+  assert.equal(cleaning.allowedShiftCodes.includes('PAGI'), false);
+  assert.equal(cleaning.allowedShiftCodes.length > 0, true);
+  // Template tetap bisa di-resolve supaya absensi/jadwal lama tidak kehilangan jam kerja.
+  assert.equal(SHIFT_TEMPLATES.PAGI.startTime, '07:00');
+  // Security: PAGI dibuang, sisa shift lain tetap urut.
+  assert.deepEqual(resolveDivisionShiftRule('Security').allowedShiftCodes, [
+    'SECURITY24',
+    'SIANG',
+    'MALAM',
+  ]);
+
+  registerHiddenShiftTemplates([]);
+  assert.deepEqual(resolveDivisionShiftRule('Security').allowedShiftCodes, [
+    'SECURITY24',
+    'PAGI',
+    'SIANG',
+    'MALAM',
+  ]);
+});
+
+test('toleransi pulang shift tersimpan di katalog dan jadi default divisi', () => {
+  registerHiddenShiftTemplates([]);
+  const built = buildShiftTemplate(
+    {
+      name: 'Shift Sore',
+      startTime: '13:00',
+      endTime: '21:00',
+      toleranceMinutes: 10,
+      earlyOutMinutes: 25,
+      lateOutMinutes: 30,
+    },
+    []
+  );
+  assert.equal(built.ok, true);
+  if (!built.ok) return;
+  assert.equal(built.template.earlyOutMinutes, 25);
+  assert.equal(built.template.lateOutMinutes, 30);
+  registerShiftTemplates([built.template]);
+
+  // Tanpa override divisi: toleransi pulang mengikuti katalog shift (bukan 15 menit hardcode).
+  assert.equal(resolveShiftTolerance('SHIFT_SORE').earlyOutMinutes, 25);
+  assert.equal(resolveShiftTolerance('SHIFT_SORE').lateOutMinutes, 30);
+  // Override divisi tetap menang.
+  assert.equal(
+    resolveShiftTolerance('SHIFT_SORE', {
+      division: 'Operasional',
+      allowedShiftCodes: ['SHIFT_SORE'],
+      defaultShiftCode: 'SHIFT_SORE',
+      shiftTolerances: {
+        SHIFT_SORE: { earlyInMinutes: 60, lateInMinutes: 10, earlyOutMinutes: 5, lateOutMinutes: 12 },
+      },
+    }).lateOutMinutes,
+    12
+  );
+  // Bawaan aplikasi tetap 15 menit saat katalog tidak menyebut nilai.
+  assert.equal(resolveShiftTolerance('REGULER').earlyOutMinutes, 15);
+  assert.equal(resolveShiftTolerance('REGULER').lateOutMinutes, 15);
+
+  registerShiftTemplates([]);
+  registerHiddenShiftTemplates([]);
 });
 
 test('validateShiftSwap rejects overlaps, disallowed shifts, leave, and duplicates', () => {
@@ -458,4 +618,134 @@ test('effectiveShiftForDate prefers the schedule entry over the profile shift', 
   ];
   assert.equal(effectiveShiftForDate('uid_a', '2026-11-25', schedules, 'PAGI'), 'SIANG');
   assert.equal(effectiveShiftForDate('uid_a', '2026-11-26', schedules, 'PAGI'), 'PAGI');
+});
+
+test('schedulesMirroringProfileShift moves only today/upcoming rows that follow the old profile shift', () => {
+  const row = (id: string, uid: string, date: string, shiftCode: ShiftCode) => ({
+    id,
+    uid,
+    nik: 'SEC-0001',
+    date,
+    shiftCode,
+    location: 'Pos Utama',
+    notes: '',
+    patrolCompleted: false,
+  });
+  const schedules = [
+    row('sch_a_today', 'uid_a', '2026-11-26', 'PAGI'),
+    row('sch_a_tomorrow', 'uid_a', '2026-11-27', 'PAGI'),
+    row('sch_a_past', 'uid_a', '2026-11-25', 'PAGI'),
+    row('sch_a_other_shift', 'uid_a', '2026-11-28', 'SIANG'),
+    row('sch_b_today', 'uid_b', '2026-11-26', 'PAGI'),
+  ];
+
+  // Shift profil PAGI → MALAM: jadwal hari ini & ke depan yang masih PAGI ikut pindah,
+  // jadwal lampau, shift lain, dan karyawan lain tidak tersentuh.
+  const mirrored = schedulesMirroringProfileShift({
+    uid: 'uid_a',
+    previousShift: 'PAGI',
+    nextShift: 'MALAM',
+    fromDate: '2026-11-26',
+    schedules,
+  });
+  assert.deepEqual(
+    mirrored.map((sch) => sch.id),
+    ['sch_a_today', 'sch_a_tomorrow']
+  );
+
+  // Tidak ada perubahan / karyawan belum punya shift profil: tidak ada yang dipindah.
+  assert.deepEqual(
+    schedulesMirroringProfileShift({
+      uid: 'uid_a',
+      previousShift: 'PAGI',
+      nextShift: 'PAGI',
+      fromDate: '2026-11-26',
+      schedules,
+    }),
+    []
+  );
+  assert.deepEqual(
+    schedulesMirroringProfileShift({
+      uid: 'uid_a',
+      previousShift: undefined,
+      nextShift: 'MALAM',
+      fromDate: '2026-11-26',
+      schedules,
+    }),
+    []
+  );
+});
+
+test('getStaffDutyInfo and getShiftRostersForDate accurately compute duty partners and backup staff', () => {
+  const dummyEmployees = [
+    { uid: 'u1', name: 'Budi Santoso', nik: 'SEC-01', division: 'Security', active: true, shiftCode: 'PAGI' } as Employee,
+    { uid: 'u2', name: 'Anton Wijaya', nik: 'SEC-02', division: 'Security', active: true, shiftCode: 'PAGI' } as Employee,
+    { uid: 'u3', name: 'Caca Backup', nik: 'SEC-03', division: 'Security', active: true, shiftCode: 'PAGI' } as Employee,
+  ];
+
+  const dummySchedules = [
+    { id: 's1', uid: 'u1', nik: 'SEC-01', date: '2026-11-28', shiftCode: 'PAGI' as ShiftCode, location: 'Pos 1', notes: '', patrolCompleted: false, isBackup: false },
+    { id: 's2', uid: 'u2', nik: 'SEC-02', date: '2026-11-28', shiftCode: 'PAGI' as ShiftCode, location: 'Pos 1', notes: '', patrolCompleted: false, isBackup: false },
+    { id: 's3', uid: 'u3', nik: 'SEC-03', date: '2026-11-28', shiftCode: 'PAGI' as ShiftCode, location: 'Pos 1', notes: '', patrolCompleted: false, isBackup: true },
+  ];
+
+  const budiDuty = getStaffDutyInfo({
+    uid: 'u1',
+    date: '2026-11-28',
+    schedules: dummySchedules,
+    employees: dummyEmployees,
+    fallbackShift: 'PAGI',
+  });
+
+  assert.equal(budiDuty.isBackup, false);
+  assert.equal(budiDuty.dutyPartners.length, 1);
+  assert.equal(budiDuty.dutyPartners[0].uid, 'u2');
+  assert.equal(budiDuty.backupStaff?.uid, 'u3');
+
+  const cacaDuty = getStaffDutyInfo({
+    uid: 'u3',
+    date: '2026-11-28',
+    schedules: dummySchedules,
+    employees: dummyEmployees,
+    fallbackShift: 'PAGI',
+  });
+  assert.equal(cacaDuty.isBackup, true);
+
+  const rosters = getShiftRostersForDate({
+    date: '2026-11-28',
+    division: 'Security',
+    schedules: dummySchedules,
+    employees: dummyEmployees,
+  });
+  assert.equal(rosters.length, 1);
+  assert.equal(rosters[0].primaryStaff.length, 2);
+  assert.equal(rosters[0].backupStaff?.uid, 'u3');
+});
+
+test('checkScheduleGaps detects dates with missing schedule or missing backup', () => {
+  const dummyEmployees = [
+    { uid: 'u1', name: 'Budi', nik: 'SEC-01', division: 'Security', active: true, shiftCode: 'PAGI' } as Employee,
+  ];
+
+  const gapsNoSched = checkScheduleGaps({
+    divisions: ['Security'],
+    employees: dummyEmployees,
+    schedules: [],
+    startDate: '2026-11-28',
+    daysCount: 1,
+  });
+  assert.equal(gapsNoSched.length, 1);
+  assert.equal(gapsNoSched[0].type, 'no_schedule');
+
+  const gapsNoBackup = checkScheduleGaps({
+    divisions: ['Security'],
+    employees: dummyEmployees,
+    schedules: [
+      { id: 's1', uid: 'u1', nik: 'SEC-01', date: '2026-11-28', shiftCode: 'PAGI' as ShiftCode, location: '', notes: '', patrolCompleted: false, isBackup: false },
+    ],
+    startDate: '2026-11-28',
+    daysCount: 1,
+  });
+  assert.equal(gapsNoBackup.length, 1);
+  assert.equal(gapsNoBackup[0].type, 'no_backup');
 });

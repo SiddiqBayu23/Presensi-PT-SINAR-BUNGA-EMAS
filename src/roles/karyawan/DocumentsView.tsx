@@ -11,6 +11,7 @@ import {
 import { useHris } from '../../context/HrisContext';
 import type { DocumentSubTab } from '../../types/hris';
 import {
+  buildRecentPayslipPeriods,
   calculatePayslip,
   formatRupiah,
 } from '../../utils/hrisLogic';
@@ -20,13 +21,6 @@ interface DocumentsViewProps {
   activeSubTab: DocumentSubTab;
   onChangeSubTab: (sub: DocumentSubTab) => void;
 }
-
-const PAYSLIP_PERIODS = [
-  { key: '2026-11', label: 'November 2026' },
-  { key: '2026-10', label: 'Oktober 2026' },
-  { key: '2026-09', label: 'September 2026' },
-];
-
 export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewProps) {
   const {
     currentUser,
@@ -34,12 +28,23 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
     overtimes,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
+    wibNow,
     signContract,
     updateEmployeeProfile,
     shiftTemplateFor,
   } = useHris();
 
-  const [selectedPeriod, setSelectedPeriod] = useState(PAYSLIP_PERIODS[0]);
+  const payslipPeriods = useMemo(
+    () => buildRecentPayslipPeriods(wibNow.year, wibNow.month),
+    [wibNow.year, wibNow.month]
+  );
+  const [selectedPeriodKey, setSelectedPeriodKey] = useState(payslipPeriods[0].key);
+  const selectedPeriod =
+    payslipPeriods.find((p) => p.key === selectedPeriodKey) ?? {
+      key: wibNow.periodKey,
+      label: wibNow.periodLabel,
+    };
   const [phone, setPhone] = useState(currentUser?.phone ?? '');
   const [address, setAddress] = useState(currentUser?.address ?? '');
   const [saving, setSaving] = useState(false);
@@ -61,17 +66,19 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
       attendance,
       overtimes,
       payslipComponents,
-      payrollSettings
+      payrollSettings,
+      userPayrollConfigs[currentUser.uid]
     );
   }, [
     currentUser,
-    selectedPeriod,
+    selectedPeriod.key,
+    selectedPeriod.label,
     attendance,
     overtimes,
     payslipComponents,
     payrollSettings,
+    userPayrollConfigs,
   ]);
-
   if (!currentUser || !payslip) return null;
 
   const handleSaveProfile = async (e: React.FormEvent) => {
@@ -148,13 +155,10 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
               <select
                 aria-label="Pilih periode slip gaji"
                 value={selectedPeriod.key}
-                onChange={(e) => {
-                  const found = PAYSLIP_PERIODS.find((p) => p.key === e.target.value);
-                  if (found) setSelectedPeriod(found);
-                }}
+                onChange={(e) => setSelectedPeriodKey(e.target.value)}
                 className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-[#0B2453] focus:border-[#0B2453] focus:outline-none"
               >
-                {PAYSLIP_PERIODS.map((p) => (
+                {payslipPeriods.map((p) => (
                   <option key={p.key} value={p.key}>
                     {p.label}
                   </option>
@@ -188,9 +192,9 @@ export function DocumentsView({ activeSubTab, onChangeSubTab }: DocumentsViewPro
               </div>
             </div>
             <div>
-              <div className="text-slate-500">Kehadiran Tercatat</div>
+              <div className="text-slate-500">Kehadiran &amp; Tarif</div>
               <div className="font-mono font-bold text-[#0B2453] mt-0.5 tabular-nums">
-                {payslip.attendanceDays} hari &bull; Lembur {payslip.overtimeHours}j
+                {payslip.attendanceDays}/{payslip.workDaysTarget} hari ({formatRupiah(payslip.dailyBaseRate)}/hadir) &bull; Lembur {payslip.overtimeHours}j
               </div>
             </div>
           </div>

@@ -68,6 +68,9 @@ export function PresensiView({ onOpenAttendance }: PresensiViewProps) {
       inOpensAt: minutesToTimeLabel(start - tolerance.earlyInMinutes),
       lateInMinutes: tolerance.lateInMinutes,
       outOpensAt: minutesToTimeLabel(end - tolerance.earlyOutMinutes),
+      outClosesAt: minutesToTimeLabel(end + tolerance.lateOutMinutes),
+      earlyOutMinutes: tolerance.earlyOutMinutes,
+      lateOutMinutes: tolerance.lateOutMinutes,
     };
   }, [currentUser, schedules, wibNow.isoDate, divisionShiftRules]);
 
@@ -137,8 +140,8 @@ export function PresensiView({ onOpenAttendance }: PresensiViewProps) {
 
             {absenWindow && (
               <div className="text-[11px] text-slate-500 leading-relaxed">
-                Toleransi absensi: <strong>masuk</strong> dibuka mulai {absenWindow.inOpensAt} (telat ≤ {absenWindow.lateInMinutes} menit masih tepat waktu) &bull;{' '}
-                <strong>pulang</strong> dibuka mulai {absenWindow.outOpensAt}, setelah jam pulang bebas (tidak terbatas).
+                Toleransi absensi: <strong>masuk</strong> dibuka mulai {absenWindow.inOpensAt} (telat &le; {absenWindow.lateInMinutes} menit masih tepat waktu) &bull;{' '}
+                <strong>pulang</strong> dibuka {absenWindow.outOpensAt}&ndash;{absenWindow.outClosesAt} (pulang awal &le; {absenWindow.earlyOutMinutes} menit, telat &le; {absenWindow.lateOutMinutes} menit).
               </div>
             )}
 

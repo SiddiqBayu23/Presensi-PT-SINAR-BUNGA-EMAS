@@ -3,7 +3,8 @@
  *
  * Fungsi di sini menggantikan operasi istimewa yang sebelumnya dijalankan di klien
  * (`provisionEmployeeAccount` di src/firebase.ts memakai createUserWithEmailAndPassword,
- * sehingga siapa pun yang memegang apiKey publik bisa mendaftar sendiri).
+ * sehingga siapa pun yang memegang apiKey publik bisa mendaftar sendiri). Fungsi ini butuh
+ * project ber-Blaze; selama belum di-deploy, klien memakai jalur cadangan itu lagi.
  *
  * Sumber otoritas hak akses tetap dokumen Firestore `admins/{uid}` dan `employees/{uid}`
  * supaya `firestore.rules` (dan firestore.rules.test.ts) tidak perlu diubah. Fungsi
@@ -17,8 +18,8 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 
-/** Database bernama (bukan `(default)`) — sama dengan firestoreDatabaseId di firebase-applet-config.json. */
-const DATABASE_ID = 'ai-studio-ptsinarbungamasa-df6f62f5-f72a-4811-b3c7-0e5c822f6913';
+/** Database default project timesheet-absen-karyawan — sama dengan firestoreDatabaseId di firebase-applet-config.json. */
+const DATABASE_ID = '(default)';
 
 const app = initializeApp();
 const db = getFirestore(app, DATABASE_ID);
@@ -27,6 +28,9 @@ const auth = getAuth(app);
 setGlobalOptions({ region: 'asia-southeast2', maxInstances: 10 });
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Sama dengan BOOTSTRAP_ADMIN_EMAIL di src/firebase.ts dan isBootstrapAdmin() di firestore.rules. */
+const BOOTSTRAP_ADMIN_EMAIL = 'fikriramadhan998@gmail.com';
 
 function firebaseCode(error: unknown): string {
   if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
@@ -42,7 +46,17 @@ function readString(source: unknown, key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
-/** Hanya administrator HRD terverifikasi (dokumen `admins/{uid}`) yang boleh memanggil. */
+/** Baca satu field boolean dari `request.data`; selain `true` dianggap `false`. */
+function readBoolean(source: unknown, key: string): boolean {
+  if (source === null || typeof source !== 'object') return false;
+  return Reflect.get(source, key) === true;
+}
+
+/**
+ * Administrator HRD terverifikasi: pemegang dokumen `admins/{uid}` — sama dengan `isAdmin()`
+ * di firestore.rules — atau akun bootstrap aplikasi (email pemilik sistem), supaya admin
+ * utama tetap bisa memakai fungsi ini tanpa dokumen grant.
+ */
 async function assertAdmin(request: CallableRequest): Promise<string> {
   const caller = request.auth;
   if (!caller) {
@@ -52,10 +66,10 @@ async function assertAdmin(request: CallableRequest): Promise<string> {
     throw new HttpsError('permission-denied', 'Verifikasi email akun Anda terlebih dahulu.');
   }
   const grant = await db.doc(`admins/${caller.uid}`).get();
-  if (!grant.exists) {
-    throw new HttpsError('permission-denied', 'Akun ini bukan administrator HRD.');
+  if (grant.exists || caller.token.email === BOOTSTRAP_ADMIN_EMAIL) {
+    return caller.uid;
   }
-  return caller.uid;
+  throw new HttpsError('permission-denied', 'Akun ini bukan administrator HRD.');
 }
 
 /**
@@ -96,6 +110,36 @@ export const provisionEmployee = onCall(async (request) => {
     }
     throw new HttpsError('internal', 'Gagal membuat akun karyawan.');
   }
+});
+
+/**
+ * Menonaktifkan/mengaktifkan akun login karyawan dengan mematikan akunnya di Firebase Auth
+ * (`disabled: true`), jadi login ditolak oleh server — bukan hanya oleh gerbang di klien.
+ * Saat akun dinonaktifkan, ID token lama langsung tidak diterima lagi oleh Firebase Auth.
+ */
+export const setEmployeeActive = onCall(async (request) => {
+  const callerUid = await assertAdmin(request);
+
+  const uid = readString(request.data, 'uid').trim();
+  const active = readBoolean(request.data, 'active');
+
+  if (!uid || uid.length > 128) {
+    throw new HttpsError('invalid-argument', 'uid karyawan tidak valid.');
+  }
+  if (uid === callerUid) {
+    throw new HttpsError('failed-precondition', 'Akun Anda sendiri tidak bisa dinonaktifkan.');
+  }
+
+  try {
+    await auth.updateUser(uid, { disabled: !active });
+  } catch (error) {
+    if (firebaseCode(error) === 'auth/user-not-found') {
+      throw new HttpsError('not-found', 'Akun login karyawan ini tidak ditemukan.');
+    }
+    throw new HttpsError('internal', 'Gagal memperbarui status akun login karyawan.');
+  }
+
+  return { uid, active };
 });
 
 /** Klaim `role` diturunkan dari dokumen sumber; dipakai `storage.rules`. */

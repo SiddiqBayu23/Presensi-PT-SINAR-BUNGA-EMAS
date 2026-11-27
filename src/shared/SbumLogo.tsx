@@ -1,4 +1,10 @@
-export function SbumFullLogo({ className = '' }: { className?: string }) {
+export function SbumFullLogo({
+  className = '',
+  onDark = false,
+}: {
+  className?: string;
+  onDark?: boolean;
+}) {
   return (
     <div className={`inline-flex flex-col items-center select-none ${className}`}>
       <svg
@@ -59,7 +65,7 @@ export function SbumFullLogo({ className = '' }: { className?: string }) {
           fontWeight="800"
           fontSize="16.5"
           letterSpacing="1.1"
-          fill="#0B2453"
+          fill={onDark ? '#FFFFFF' : '#0B2453'}
         >
           PT SINAR BUNGA MAS
         </text>
@@ -74,7 +80,7 @@ export function SbumFullLogo({ className = '' }: { className?: string }) {
           fontWeight="700"
           fontSize="7.8"
           letterSpacing="1.35"
-          fill="#334155"
+          fill={onDark ? '#F3CA62' : '#334155'}
         >
           ONE STOP BUSINESS SERVICES
         </text>

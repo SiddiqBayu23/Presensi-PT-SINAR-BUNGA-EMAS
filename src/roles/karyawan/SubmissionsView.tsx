@@ -11,12 +11,12 @@ import {
 import { useHris } from '../../context/HrisContext';
 import type { LeaveRequest, ShiftCode, SubmissionSubTab } from '../../types/hris';
 import {
-  SHIFT_TEMPLATES,
   calculateInclusiveDays,
   calculateOvertimeEstimate,
   effectiveShiftForDate,
   formatRupiah,
   resolveDivisionShiftRule,
+  shiftTemplateName,
 } from '../../utils/hrisLogic';
 
 interface SubmissionsViewProps {
@@ -27,6 +27,7 @@ interface SubmissionsViewProps {
 export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsViewProps) {
   const {
     currentUser,
+    employees,
     leaves,
     overtimes,
     shiftSwaps,
@@ -35,6 +36,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
     submitLeave,
     submitOvertime,
     submitShiftSwap,
+    reviewShiftSwapPeer,
     submitExitClearance,
     toggleExitChecklistItem,
     divisionShiftRules,
@@ -54,7 +56,9 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
 
   const [swDate, setSwDate] = useState(wibNow.isoDate);
   const [swToShift, setSwToShift] = useState<ShiftCode>('SIANG');
+  const [swTargetUid, setSwTargetUid] = useState<string>('');
   const [swReason, setSwReason] = useState('');
+  const [peerBusyId, setPeerBusyId] = useState<string | null>(null);
 
   const [exDate, setExDate] = useState('2026-12-31');
   const [exReason, setExReason] = useState('');
@@ -68,6 +72,18 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
   const myOvertimes = overtimes.filter((o) => o.uid === currentUser.uid);
   const myShiftSwaps = shiftSwaps.filter((s) => s.uid === currentUser.uid);
   const myExits = exitClearances.filter((e) => e.uid === currentUser.uid);
+
+  // Rekan satu divisi yang bisa diajak bertukar jadwal
+  const divisionColleagues = useMemo(() => {
+    return employees.filter(
+      (e) => e.division === currentUser.division && e.uid !== currentUser.uid && e.active
+    );
+  }, [employees, currentUser.division, currentUser.uid]);
+
+  // Permintaan tukar shift yang masuk dari rekan kepada saya
+  const incomingShiftSwaps = useMemo(() => {
+    return shiftSwaps.filter((s) => s.targetUid === currentUser.uid);
+  }, [shiftSwaps, currentUser.uid]);
 
   // Shift efektif pada tanggal pengajuan (jadwal/tukar shift sebelumnya) & shift yang boleh dipakai divisi.
   const effectiveShift = effectiveShiftForDate(
@@ -144,6 +160,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
       date: swDate,
       toShift: swToShift,
       reason: swReason,
+      targetUid: swTargetUid || undefined,
     });
     setSubmitting(false);
     if (!res.ok) {
@@ -151,7 +168,31 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
       return;
     }
     setSwReason('');
-    setFeedback({ type: 'ok', text: 'Pengajuan Tukar Shift berhasil disimpan ke Firebase.' });
+    setSwTargetUid('');
+    setFeedback({
+      type: 'ok',
+      text: swTargetUid
+        ? 'Pengajuan Tukar Shift berhasil dikirim ke rekan untuk persetujuan awal (Tahap 1).'
+        : 'Pengajuan Tukar Shift berhasil dikirim ke Atasan / HRD.',
+    });
+  };
+
+  const handlePeerReview = async (id: string, action: 'Disetujui' | 'Ditolak') => {
+    setPeerBusyId(id);
+    const res = await reviewShiftSwapPeer(id, action);
+    setPeerBusyId(null);
+    if (!res.ok) {
+      setFeedback({ type: 'err', text: res.error ?? 'Gagal memproses keputusan.' });
+    } else {
+      setFeedback({
+        type: 'ok',
+        text: `Permintaan tukar shift berhasil ${
+          action === 'Disetujui'
+            ? 'disetujui. Pengajuan kini diteruskan ke Atasan / HRD.'
+            : 'ditolak.'
+        }`,
+      });
+    }
   };
 
   const handleExitSubmit = async (e: React.FormEvent) => {
@@ -475,7 +516,7 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
                 </strong>
                 <span className="block text-[11px] text-slate-500 mt-0.5">
                   Shift tersedia untuk divisi {currentUser.division}:{' '}
-                  {allowedShiftCodes.map((code) => SHIFT_TEMPLATES[code].name).join(' • ')}
+                  {allowedShiftCodes.map((code) => shiftTemplateName(code)).join(' • ')}
                 </span>
               </div>
 
@@ -492,16 +533,41 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
                 />
               </div>
 
+              {/* Pemilihan Rekan yang Diajak Tukar Shift */}
+              <div>
+                <label htmlFor="sw-partner" className="block text-xs font-bold text-[#0B2453] mb-1">
+                  Rekan yang Diajak Tukar Jadwal (Satu Divisi)
+                </label>
+                <select
+                  id="sw-partner"
+                  value={swTargetUid}
+                  onChange={(e) => setSwTargetUid(e.target.value)}
+                  className="w-full h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm focus:border-[#0B2453] focus:outline-none font-medium"
+                >
+                  <option value="">-- Tanpa Rekan Spesifik (Langsung ke Atasan) --</option>
+                  {divisionColleagues.map((colleague) => (
+                    <option key={colleague.uid} value={colleague.uid}>
+                      {colleague.name} ({colleague.position})
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[11px] text-slate-500 leading-relaxed bg-blue-50/60 border border-blue-200/60 p-2 rounded-lg">
+                  💡 <strong>Alur 2 Tahap:</strong> Bila memilih rekan, rekan Anda harus
+                  menyetujui terlebih dahulu (Tahap 1). Setelah rekan setuju, pengajuan otomatis
+                  diteruskan ke Supervisor / HRD (Tahap 2).
+                </div>
+              </div>
+
               {availableShiftCodes.length === 0 ? (
                 <div className="rounded-xl bg-amber-50 border border-amber-300 p-3 text-xs text-amber-900 leading-relaxed">
                   Divisi <strong>{currentUser.division}</strong> saat ini hanya memiliki 1 aturan shift (
-                  {SHIFT_TEMPLATES[effectiveShift]?.name ?? effectiveShift}), sehingga belum ada shift alternatif
+                  {shiftTemplateName(effectiveShift)}), sehingga belum ada shift alternatif
                   lain untuk ditukar. Hubungi Admin HRD untuk menambah shift divisi.
                 </div>
               ) : (
                 <div>
                   <label htmlFor="sw-target" className="block text-xs font-bold text-[#0B2453] mb-1">
-                    Shift Tujuan
+                    Shift Tujuan Anda
                   </label>
                   <select
                     id="sw-target"
@@ -546,33 +612,134 @@ export function SubmissionsView({ activeSubTab, onChangeSubTab }: SubmissionsVie
             </form>
           </section>
 
-          <section className="lg:col-span-7 rounded-3xl bg-white p-5 sm:p-6 shadow-[0_6px_24px_rgba(11,36,83,0.06)] border border-slate-200/70">
-            <div className="flex items-center gap-2.5 mb-4">
-              <span className="w-1 h-5 rounded-full bg-[#C69214]" aria-hidden="true" />
-              <h2 className="text-base font-extrabold text-[#0B2453]">Riwayat Tukar Shift</h2>
-            </div>
-            {myShiftSwaps.length === 0 ? (
-              <p className="text-sm text-slate-500">Belum ada pengajuan tukar shift.</p>
-            ) : (
-              <div className="space-y-3">
-                {myShiftSwaps.map((item) => (
-                  <div
-                    key={item.id}
-                    className="rounded-2xl border border-slate-200/80 bg-[#F9FBFE] p-4 space-y-1.5"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-bold text-[#0B2453]">
-                        {item.fromShift} &rarr; {item.toShift} ({item.date})
-                      </span>
-                      <span className={`text-xs font-extrabold ${statusTextClass(item.status)}`}>
-                        {item.status}
-                      </span>
+          <section className="lg:col-span-7 space-y-5">
+            {/* Permintaan Tukar Shift Masuk dari Rekan (Tahap 1) */}
+            {incomingShiftSwaps.length > 0 && (
+              <div className="rounded-3xl bg-white p-5 sm:p-6 shadow-[0_6px_24px_rgba(11,36,83,0.06)] border border-amber-300 bg-amber-50/20 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-5 rounded-full bg-amber-500" aria-hidden="true" />
+                  <h2 className="text-base font-extrabold text-[#0B2453]">
+                    Permintaan Masuk dari Rekan ({incomingShiftSwaps.length})
+                  </h2>
+                </div>
+                <div className="space-y-3">
+                  {incomingShiftSwaps.map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-2xl border border-amber-200 bg-white p-4 space-y-2 shadow-2xs"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-extrabold text-[#0B2453]">
+                            {item.employeeName} ({item.nik})
+                          </div>
+                          <div className="text-xs font-semibold text-slate-600 mt-0.5">
+                            Mengajukan tukar shift pada <strong>{item.date}</strong>: ingin beralih
+                            ke shift <strong>{item.toShift}</strong> (shift asal: {item.fromShift})
+                          </div>
+                        </div>
+                        <span
+                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                            item.peerStatus === 'Disetujui'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : item.peerStatus === 'Ditolak'
+                                ? 'bg-rose-100 text-rose-800'
+                                : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {item.peerStatus === 'Disetujui'
+                            ? 'Anda Setujui'
+                            : item.peerStatus === 'Ditolak'
+                              ? 'Anda Tolak'
+                              : 'Menunggu Respon Anda'}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-slate-600 italic bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                        &quot;{item.reason}&quot;
+                      </p>
+
+                      {item.peerStatus === 'Menunggu' && item.status === 'Menunggu' && (
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={peerBusyId === item.id}
+                            onClick={() => void handlePeerReview(item.id, 'Disetujui')}
+                            className="flex-1 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer disabled:opacity-50 transition-colors"
+                          >
+                            {peerBusyId === item.id ? 'Memproses...' : 'Setujui Tukar Jadwal'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={peerBusyId === item.id}
+                            onClick={() => void handlePeerReview(item.id, 'Ditolak')}
+                            className="flex-1 h-9 rounded-xl bg-white border border-rose-200 text-rose-700 hover:bg-rose-50 font-bold text-xs cursor-pointer disabled:opacity-50 transition-colors"
+                          >
+                            Tolak
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <p className="text-xs text-slate-600">{item.reason}</p>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
+
+            {/* Riwayat Pengajuan Saya */}
+            <div className="rounded-3xl bg-white p-5 sm:p-6 shadow-[0_6px_24px_rgba(11,36,83,0.06)] border border-slate-200/70">
+              <div className="flex items-center gap-2.5 mb-4">
+                <span className="w-1 h-5 rounded-full bg-[#C69214]" aria-hidden="true" />
+                <h2 className="text-base font-extrabold text-[#0B2453]">Riwayat Pengajuan Saya</h2>
+              </div>
+              {myShiftSwaps.length === 0 ? (
+                <p className="text-sm text-slate-500">Belum ada pengajuan tukar shift.</p>
+              ) : (
+                <div className="space-y-3">
+                  {myShiftSwaps.map((item) => {
+                    const hasPeer = Boolean(item.targetEmployeeName);
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-slate-200/80 bg-[#F9FBFE] p-4 space-y-2"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                          <span className="text-sm font-bold text-[#0B2453]">
+                            {item.fromShift} &rarr; {item.toShift} ({item.date})
+                          </span>
+                          <span className={`text-xs font-extrabold ${statusTextClass(item.status)}`}>
+                            {item.status}
+                          </span>
+                        </div>
+
+                        {hasPeer && (
+                          <div className="text-[11px] font-medium text-slate-600 bg-white p-2 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-1">
+                            <span>Diajak tukar: <strong>{item.targetEmployeeName}</strong></span>
+                            <span
+                              className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${
+                                item.peerStatus === 'Disetujui'
+                                  ? 'bg-emerald-50 text-emerald-800'
+                                  : item.peerStatus === 'Ditolak'
+                                    ? 'bg-rose-50 text-rose-800'
+                                    : 'bg-amber-50 text-amber-800'
+                              }`}
+                            >
+                              Tahap 1 Rekan: {item.peerStatus ?? 'Menunggu'}
+                            </span>
+                          </div>
+                        )}
+
+                        <p className="text-xs text-slate-600">{item.reason}</p>
+                        {item.reviewedBy && (
+                          <p className="text-[11px] text-slate-400">
+                            Diputuskan oleh: {item.reviewedBy}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </section>
         </div>
       )}

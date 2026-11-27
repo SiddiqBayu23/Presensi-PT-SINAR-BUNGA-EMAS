@@ -3,12 +3,19 @@
 @theme {
   --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --color-sbm-navy: #0B2453;
-  --color-sbm-navy-light: #163A7A;
-  --color-sbm-gold: #C69214;
-  --color-sbm-gold-bright: #E2B33C;
-  --color-sbm-gold-dark: #9B710D;
-  --color-sbm-canvas: #F4F7FB;
+
+  /* =====================================================================
+   * Brand Color Tokens — Refined Sapphire & Warm Gold Palette
+   *
+   * Navy dihaluskan ke sapphire-navy agar tidak terlalu pekat/kaku,
+   * gold dibuat lebih hangat & bersih (tidak kehijauan) serta kontras.
+   * ===================================================================== */
+  --color-sbm-navy: #112A58;
+  --color-sbm-navy-light: #1C4082;
+  --color-sbm-gold: #C98F12;
+  --color-sbm-gold-bright: #EAB938;
+  --color-sbm-gold-dark: #996B08;
+  --color-sbm-canvas: #F1F5FA;
 }
 
 @layer base {
@@ -22,322 +29,724 @@
   }
 }
 
-/*
- * Tema gelap (dibatasi layar saja agar cetak/PDF selalu terang).
- * Kelas .dark dipasang pada <html> oleh HrisContext (menu Pengaturan → Mode Tampilan).
- * Aturan ini di luar @layer agar menang atas utility Tailwind (yang ada di @layer utilities),
- * sehingga tidak perlu menyunting satu per satu komponen.
- */
+/* ==========================================================================
+ * Token Tema Terang & Gelap (layar saja — cetak/PDF selalu terang)
+ * ========================================================================== */
+
+:root {
+  --sbm-selection-bg: #F3D16A;
+  --sbm-selection-fg: #0C2147;
+  --sbm-accent: #C98F12;
+}
+
 @media screen {
+  :root {
+    --sbm-canvas: #F1F5FA;
+    --sbm-surface: #FFFFFF;
+    --sbm-surface-95: rgb(255 255 255 / 0.95);
+    --sbm-surface-90: rgb(255 255 255 / 0.9);
+    --sbm-surface-80: rgb(255 255 255 / 0.85);
+    --sbm-surface-70: rgb(255 255 255 / 0.75);
+    --sbm-subtle: #F6F9FD;
+    --sbm-tint: #EBF1FA;
+    --sbm-tint-deep: #DCE6F5;
+    --sbm-hover-subtle: #EDF3FC;
+    --sbm-hover-tint: #E2EAF6;
+
+    --sbm-gold-soft: #FDF6E2;
+    --sbm-gold-soft-60: rgb(253 246 226 / 0.6);
+    --sbm-gold-soft-hover: #F9EBC3;
+
+    --sbm-navy-ink: #132B54;
+    --sbm-navy-ink-soft: #1C4082;
+    --sbm-navy-btn: #112A58;
+    --sbm-navy-btn-hover: #1B3C78;
+    --sbm-navy-grad-from: #0D234D;
+    --sbm-navy-grad-via: #17366E;
+    --sbm-navy-grad-to: #102854;
+
+    --sbm-gold-fill: #D49B16;
+    --sbm-gold-text: #8D6106;
+    --sbm-gold-accent: #B8800C;
+    --sbm-gold-border: #E8CA7A;
+    --sbm-gold-btn-from: #9E6806;
+    --sbm-gold-btn-to: #7D5004;
+    --sbm-gold-cta-from: #EAB938;
+    --sbm-gold-cta-to: #CC9414;
+
+    --sbm-border: #DCE4F0;
+    --sbm-border-subtle: #E9EFF7;
+    --sbm-border-strong: #C5D1E2;
+    --sbm-shadow-card: 0 6px 24px rgba(17, 42, 88, 0.055);
+    --sbm-shadow-nav: 0 -4px 16px rgba(17, 42, 88, 0.06);
+    --sbm-shadow-hero: 0 10px 30px rgba(13, 35, 77, 0.18);
+  }
+
   .dark {
     color-scheme: dark;
-  }
+    --sbm-selection-bg: #EAB938;
+    --sbm-selection-fg: #0C2147;
+    --sbm-accent: #EAB938;
+    scrollbar-color: #3D4E6E transparent;
 
-  .dark body {
-    background-color: #0a1120;
-    color: #e6ecf7;
-  }
+    /* 4 tingkat elevasi agar mata nyaman & hierarki tetap tegas */
+    --sbm-canvas: #0B1220;
+    --sbm-surface: #141E30;
+    --sbm-surface-95: rgb(20 30 48 / 0.95);
+    --sbm-surface-90: rgb(26 38 61 / 0.92);
+    --sbm-surface-80: rgb(26 38 61 / 0.85);
+    --sbm-surface-70: rgb(26 38 61 / 0.72);
+    --sbm-subtle: #1A263D;
+    --sbm-tint: #21304C;
+    --sbm-tint-deep: #293B5E;
+    --sbm-hover-subtle: #253553;
+    --sbm-hover-tint: #2C3E61;
 
-  /* --- Permukaan & latar --- */
-  .dark .bg-white {
-    background-color: #141c2e;
-  }
-  .dark .bg-white\/95 {
-    background-color: rgb(20 28 46 / 0.95);
-  }
-  .dark .bg-\[\#F9FBFE\],
-  .dark .bg-\[\#F8FAFD\],
-  .dark .bg-\[\#FBFDFF\],
-  .dark .bg-\[\#FAFBFD\],
-  .dark .bg-\[\#F4F7FB\],
-  .dark .bg-\[\#EEF4FC\],
-  .dark .bg-\[\#EEF3FA\],
-  .dark .bg-\[\#EEF4FF\] {
-    background-color: #0e1626;
-  }
-  .dark .bg-\[\#DDE7F6\] {
-    background-color: #1c2740;
-  }
-  .dark .bg-\[\#FFFBEB\],
-  .dark .bg-\[\#FFF8E6\],
-  .dark .bg-\[\#FFFBF0\],
-  .dark .bg-\[\#FDF5DC\],
-  .dark .bg-\[\#FCEEC5\],
-  .dark .bg-\[\#FAEBC0\] {
-    background-color: #2a2410;
-  }
-  .dark .bg-slate-50,
-  .dark .bg-slate-50\/70,
-  .dark .bg-slate-50\/50 {
-    background-color: #182136;
-  }
-  .dark .bg-slate-100,
-  .dark .bg-slate-200 {
-    background-color: #1e2941;
-  }
+    --sbm-gold-soft: #292110;
+    --sbm-gold-soft-60: rgb(41 33 16 / 0.65);
+    --sbm-gold-soft-hover: #3B2F17;
 
-  /* --- Teks --- */
-  .dark .text-slate-900 {
-    color: #eef2f9;
-  }
-  .dark .text-slate-800 {
-    color: #e3e9f4;
-  }
-  .dark .text-slate-700 {
-    color: #cbd5e5;
-  }
-  .dark .text-slate-600 {
-    color: #b3bfd4;
-  }
-  .dark .text-slate-500 {
-    color: #9aa7bf;
-  }
-  .dark .text-slate-400 {
-    color: #8593ad;
-  }
-  .dark .text-slate-300 {
-    color: #c7d2e4;
-  }
-  .dark .text-slate-200,
-  .dark .text-slate-200\/90 {
-    color: #dbe4f3;
-  }
-  /* Judul navy: terangkan, kecuali di atas lencana emas (tetap navy). */
-  .dark .text-\[\#0B2453\]:not([class*="bg-[#C69214]"]) {
-    color: #e6ecf7;
-  }
-  .dark .text-\[\#163A7A\] {
-    color: #cfd9ea;
-  }
-  /* Teks emas/cokelat: naikkan kecerahan agar terbaca di latar gelap. */
-  .dark .text-\[\#C69214\],
-  .dark .text-\[\#B6810C\],
-  .dark .text-\[\#9B710D\],
-  .dark .text-\[\#9A6F0B\],
-  .dark .text-\[\#8E6307\],
-  .dark .text-\[\#784B08\] {
-    color: #e7bd57;
-  }
-  .dark .text-\[\#6D28D9\] {
-    color: #c4b5fd;
-  }
-  .dark .text-\[\#2563EB\] {
-    color: #93c5fd;
-  }
-  .dark .text-\[\#0284C7\] {
-    color: #7dd3fc;
-  }
+    --sbm-navy-ink: #EDF2FA;
+    --sbm-navy-ink-soft: #CBD7EA;
+    --sbm-navy-btn: #23417A;
+    --sbm-navy-btn-hover: #2D5093;
+    --sbm-navy-grad-from: #0E1B36;
+    --sbm-navy-grad-via: #172E59;
+    --sbm-navy-grad-to: #112346;
 
-  /* --- Garis --- */
-  .dark .border-slate-200,
-  .dark .border-slate-200\/80,
-  .dark .border-slate-200\/70,
-  .dark .border-slate-200\/90 {
-    border-color: #2b3752;
-  }
-  .dark .border-slate-100,
-  .dark .border-slate-100\/50 {
-    border-color: #232e46;
-  }
-  .dark .border-slate-300 {
-    border-color: #36435f;
-  }
-  .dark .border-\[\#0B2453\] {
-    border-color: #3a4763;
-  }
-  .dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
-    border-color: #232e46;
-  }
-  .dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
-    border-color: #2b3752;
-  }
+    --sbm-gold-fill: #DFAA28;
+    --sbm-gold-text: #F2CA5C;
+    --sbm-gold-accent: #F2CA5C;
+    --sbm-gold-border: #6B531B;
+    --sbm-gold-btn-from: #A16B09;
+    --sbm-gold-btn-to: #7D5105;
+    --sbm-gold-cta-from: #E8B838;
+    --sbm-gold-cta-to: #C99212;
 
-  /* --- Kontrol form --- */
-  .dark input,
-  .dark select,
-  .dark textarea {
-    background-color: #1a2338;
-    border-color: #33405c;
-    color: #e6ecf7;
+    --sbm-border: #283754;
+    --sbm-border-subtle: #202D46;
+    --sbm-border-strong: #374A6E;
+    --sbm-shadow-card: 0 6px 24px rgba(0, 0, 0, 0.28);
+    --sbm-shadow-nav: 0 -4px 16px rgba(0, 0, 0, 0.35);
+    --sbm-shadow-hero: 0 10px 30px rgba(0, 0, 0, 0.35);
   }
-  .dark input::placeholder,
-  .dark textarea::placeholder {
-    color: #7c89a3;
-  }
-  .dark select option {
-    background-color: #1a2338;
-    color: #e6ecf7;
-  }
-  .dark .disabled\:bg-slate-100:disabled {
-    background-color: #1e2941;
-  }
+}
 
-  /* --- Lencana & status berwarna --- */
-  .dark .bg-emerald-50,
-  .dark .bg-emerald-50\/70,
-  .dark .bg-emerald-50\/20 {
-    background-color: #0f2b23;
-  }
-  .dark .bg-emerald-100 {
-    background-color: #14382d;
-  }
-  .dark .border-emerald-200,
-  .dark .border-emerald-200\/80,
-  .dark .border-emerald-300 {
-    border-color: #1f5c49;
-  }
-  .dark .text-emerald-600 {
-    color: #34d399;
-  }
-  .dark .text-emerald-700 {
-    color: #4ade9f;
-  }
-  .dark .text-emerald-800,
-  .dark .text-emerald-800\/80 {
-    color: #6ee7b7;
-  }
-  .dark .text-emerald-900 {
-    color: #a7f3d0;
-  }
+::selection {
+  background-color: var(--sbm-selection-bg);
+  color: var(--sbm-selection-fg);
+  text-shadow: none;
+}
 
-  .dark .bg-amber-50,
-  .dark .bg-amber-50\/70,
-  .dark .bg-amber-50\/50 {
-    background-color: #2c2410;
-  }
-  .dark .bg-amber-100,
-  .dark .bg-amber-100\/90 {
-    background-color: #3a2f13;
-  }
-  .dark .border-amber-200,
-  .dark .border-amber-200\/80,
-  .dark .border-amber-300 {
-    border-color: #6b5518;
-  }
-  .dark .text-amber-600,
-  .dark .text-amber-700 {
-    color: #fcd34d;
-  }
-  .dark .text-amber-800,
-  .dark .text-amber-900 {
-    color: #fde68a;
-  }
+::-moz-selection {
+  background-color: var(--sbm-selection-bg);
+  color: var(--sbm-selection-fg);
+  text-shadow: none;
+}
 
-  .dark .bg-rose-50,
-  .dark .bg-rose-50\/20 {
-    background-color: #2d1520;
-  }
-  .dark .bg-rose-100 {
-    background-color: #3a1b28;
-  }
-  .dark .border-rose-200,
-  .dark .border-rose-300 {
-    border-color: #6d3247;
-  }
-  .dark .text-rose-600,
-  .dark .text-rose-700 {
-    color: #fda4af;
-  }
-  .dark .text-rose-800 {
-    color: #fecdd3;
-  }
+/* Warna aksen bawaan browser: centang checkbox/radio, caret, dan kilau tap. */
+html {
+  accent-color: var(--sbm-accent);
+  -webkit-tap-highlight-color: rgb(201 143 18 / 0.22);
+}
 
-  .dark .bg-red-50 {
-    background-color: #2d1518;
-  }
-  .dark .border-red-200 {
-    border-color: #6d2b2b;
-  }
-  .dark .text-red-700 {
-    color: #fca5a5;
-  }
+/* ==========================================================================
+ * Penyelarasan Palet Terang & Gelap (dalam @layer utilities agar hover/focus
+ * Tailwind selalu menjaga urutan cascade & spesifisitas yang benar).
+ * ========================================================================== */
+@media screen {
+  @layer utilities {
+    /* --- Dasar halaman & permukaan (berlaku untuk terang & gelap via token) --- */
+    body {
+      background-color: var(--sbm-canvas);
+    }
 
-  .dark .bg-blue-50,
-  .dark .bg-blue-50\/70,
-  .dark .bg-blue-50\/30,
-  .dark .bg-blue-50\/20 {
-    background-color: #132339;
-  }
-  .dark .bg-blue-100 {
-    background-color: #17304d;
-  }
-  .dark .border-blue-200,
-  .dark .border-blue-300 {
-    border-color: #2c4a75;
-  }
-  .dark .text-blue-600,
-  .dark .text-blue-800,
-  .dark .text-blue-900 {
-    color: #93c5fd;
-  }
+    .dark body {
+      color: #DCE5F2;
+    }
 
-  .dark .bg-indigo-50,
-  .dark .bg-indigo-50\/70,
-  .dark .bg-indigo-50\/50,
-  .dark .bg-indigo-50\/40 {
-    background-color: #191a3a;
-  }
-  .dark .bg-indigo-100\/90 {
-    background-color: #232452;
-  }
-  .dark .border-indigo-200,
-  .dark .border-indigo-200\/80 {
-    border-color: #3b3d7a;
-  }
-  .dark .text-indigo-600,
-  .dark .text-indigo-700,
-  .dark .text-indigo-800 {
-    color: #a5b4fc;
-  }
+    .bg-\[\#F4F7FB\],
+    .bg-\[\#F3F6FB\] {
+      background-color: var(--sbm-canvas);
+    }
 
-  .dark .bg-sky-50,
-  .dark .bg-sky-50\/70 {
-    background-color: #0e2436;
-  }
-  .dark .border-sky-200\/80 {
-    border-color: #2a5b7a;
-  }
-  .dark .text-sky-700 {
-    color: #7dd3fc;
-  }
+    .bg-white {
+      background-color: var(--sbm-surface);
+    }
+    .bg-white\/95 {
+      background-color: var(--sbm-surface-95);
+    }
+    .bg-white\/90 {
+      background-color: var(--sbm-surface-90);
+    }
+    .bg-white\/80 {
+      background-color: var(--sbm-surface-80);
+    }
+    .bg-white\/70 {
+      background-color: var(--sbm-surface-70);
+    }
 
-  /* Tombol navy: sedikit dicerahkan agar tetap terlihat sebagai aksi di latar gelap. */
-  .dark .bg-\[\#0B2453\],
-  .dark .bg-\[\#163A7A\],
-  .dark .bg-\[\#14397B\],
-  .dark .bg-\[\#143B7F\],
-  .dark .bg-\[\#143470\] {
-    background-color: #1b2e52;
-  }
+    .bg-\[\#F9FBFE\],
+    .bg-\[\#F8FAFD\],
+    .bg-\[\#FBFDFF\],
+    .bg-\[\#FAFBFD\] {
+      background-color: var(--sbm-subtle);
+    }
 
-  /* --- Status hover: jangan sampai baris/kartu menyala terang di tema gelap --- */
-  .dark .hover\:bg-slate-50:hover,
-  .dark .hover\:bg-slate-50\/70:hover,
-  .dark .hover\:bg-\[\#EEF4FC\]:hover,
-  .dark .hover\:bg-\[\#DDE7F6\]:hover {
-    background-color: #1b2438;
-  }
-  .dark .hover\:bg-slate-100:hover,
-  .dark .hover\:bg-\[\#0B2453\]:hover {
-    background-color: #223050;
-  }
-  .dark .hover\:bg-\[\#FFFBEB\]:hover,
-  .dark .hover\:bg-\[\#FAEBC0\]:hover,
-  .dark .hover\:bg-\[\#FCEEC5\]:hover,
-  .dark .hover\:bg-amber-50:hover {
-    background-color: #3a3016;
-  }
-  .dark .hover\:bg-amber-100:hover {
-    background-color: #453919;
-  }
-  .dark .hover\:bg-rose-100:hover {
-    background-color: #4a1f26;
-  }
-  .dark .hover\:bg-emerald-100:hover {
-    background-color: #16392c;
-  }
-  .dark .hover\:bg-indigo-50\/40:hover {
-    background-color: #232a4a;
+    .bg-\[\#EEF4FC\],
+    .bg-\[\#EEF3FA\],
+    .bg-\[\#EEF4FF\] {
+      background-color: var(--sbm-tint);
+    }
+    .bg-\[\#DDE7F6\] {
+      background-color: var(--sbm-tint-deep);
+    }
+
+    .bg-\[\#FFFBEB\],
+    .bg-\[\#FFF8E6\],
+    .bg-\[\#FFFBF0\],
+    .bg-\[\#FDF5DC\],
+    .bg-\[\#FCEEC5\],
+    .bg-\[\#FAEBC0\] {
+      background-color: var(--sbm-gold-soft);
+    }
+    .bg-\[\#FFFBEB\]\/50,
+    .bg-\[\#FFFBEB\]\/60,
+    .bg-\[\#FFF8E6\]\/60 {
+      background-color: var(--sbm-gold-soft-60);
+    }
+
+    /* --- Warna Navy & Gold yang diselaraskan --- */
+    .text-\[\#0B2453\],
+    .text-\[\#0F2B5C\] {
+      color: var(--sbm-navy-ink);
+    }
+    .text-\[\#163A7A\],
+    .text-\[\#1A3F7F\] {
+      color: var(--sbm-navy-ink-soft);
+    }
+
+    .bg-\[\#0B2453\],
+    .bg-\[\#0F2B5C\],
+    .bg-\[\#163A7A\],
+    .bg-\[\#1A3F7F\],
+    .bg-\[\#14397B\],
+    .bg-\[\#143B7F\],
+    .bg-\[\#143470\] {
+      background-color: var(--sbm-navy-btn);
+    }
+
+    .bg-\[\#C69214\] {
+      background-color: var(--sbm-gold-fill);
+    }
+    .bg-\[\#C69214\].text-white {
+      background-color: var(--sbm-gold-btn-from);
+    }
+
+    .text-\[\#9B710D\],
+    .text-\[\#A67B10\],
+    .text-\[\#9A6F0B\],
+    .text-\[\#8E6307\],
+    .text-\[\#784B08\],
+    .text-\[\#B6810C\] {
+      color: var(--sbm-gold-text);
+    }
+    .text-\[\#C69214\],
+    .text-\[\#D49B16\] {
+      color: var(--sbm-gold-accent);
+    }
+    /* Teks gold di atas panel navy gelap tetap cerah di kedua mode. */
+    .bg-\[\#0B2453\] .text-\[\#C69214\],
+    .from-\[\#0B2453\] .text-\[\#C69214\],
+    .from-\[\#0A1E46\] .text-\[\#C69214\] {
+      color: #F2CA5C;
+    }
+
+    .border-\[\#F3D88B\],
+    .border-\[\#F5D686\] {
+      border-color: var(--sbm-gold-border);
+    }
+
+    .accent-\[\#0B2453\] {
+      accent-color: var(--sbm-accent);
+    }
+
+    /* Gradient Navy Brand */
+    .from-\[\#0A1E46\],
+    .from-\[\#0B2453\],
+    .from-\[\#0F2B5C\],
+    .from-\[\#163878\] {
+      --tw-gradient-from: var(--sbm-navy-grad-from);
+    }
+    .via-\[\#122D65\],
+    .via-\[\#12305F\],
+    .via-\[\#12316C\],
+    .via-\[\#143B80\] {
+      --tw-gradient-via: var(--sbm-navy-grad-via);
+    }
+    .to-\[\#112A5E\],
+    .to-\[\#0B2453\],
+    .to-\[\#0F2B5C\],
+    .to-\[\#0B2250\],
+    .to-\[\#143B80\],
+    .to-\[\#153B7F\],
+    .to-\[\#163A7A\],
+    .to-\[\#173B7D\] {
+      --tw-gradient-to: var(--sbm-navy-grad-to);
+    }
+
+    /* Gradient Gold CTA (teks putih vs teks navy) */
+    .from-\[\#D4A424\].text-white,
+    .from-\[\#C69214\].text-white {
+      --tw-gradient-from: var(--sbm-gold-btn-from);
+    }
+    .from-\[\#A6760B\].text-white {
+      --tw-gradient-from: var(--sbm-gold-btn-to);
+    }
+    .to-\[\#A6780C\].text-white,
+    .to-\[\#A6760B\].text-white {
+      --tw-gradient-to: var(--sbm-gold-btn-to);
+    }
+    .to-\[\#C69214\].text-white {
+      --tw-gradient-to: var(--sbm-gold-btn-from);
+    }
+
+    .from-\[\#D4A424\].text-\[\#0A1E46\] {
+      --tw-gradient-from: var(--sbm-gold-cta-from);
+    }
+    .to-\[\#B6810C\].text-\[\#0A1E46\] {
+      --tw-gradient-to: var(--sbm-gold-cta-to);
+    }
+
+    /* Garis & bayangan lembut yang menyatu */
+    .border-slate-200,
+    .border-slate-200\/80,
+    .border-slate-200\/70,
+    .border-slate-200\/90 {
+      border-color: var(--sbm-border);
+    }
+    .border-slate-100,
+    .border-slate-100\/50 {
+      border-color: var(--sbm-border-subtle);
+    }
+    .border-slate-300 {
+      border-color: var(--sbm-border-strong);
+    }
+
+    .shadow-\[0_6px_24px_rgba\(11\,36\,83\,0\.06\)\] {
+      box-shadow: var(--sbm-shadow-card);
+    }
+    .shadow-\[0_-4px_16px_rgba\(11\,36\,83\,0\.06\)\] {
+      box-shadow: var(--sbm-shadow-nav);
+    }
+    .shadow-\[0_10px_30px_rgba\(11\,36\,83\,0\.18\)\] {
+      box-shadow: var(--sbm-shadow-hero);
+    }
+
+    /* --- Penyesuaian khusus Tema Gelap (.dark) --- */
+    .dark .bg-slate-50,
+    .dark .bg-slate-50\/70,
+    .dark .bg-slate-50\/60,
+    .dark .bg-slate-50\/50 {
+      background-color: var(--sbm-subtle);
+    }
+    .dark .bg-slate-100,
+    .dark .bg-slate-200 {
+      background-color: var(--sbm-tint);
+    }
+
+    /* Gradient terang di mode terang harus ikut gelap di mode gelap */
+    .dark .from-white {
+      --tw-gradient-from: var(--sbm-surface);
+    }
+    .dark .via-white {
+      --tw-gradient-via: var(--sbm-surface);
+    }
+    .dark .to-\[\#F8FAFD\] {
+      --tw-gradient-to: var(--sbm-subtle);
+    }
+    .dark .from-blue-50 {
+      --tw-gradient-from: #13243F;
+    }
+    .dark .to-indigo-50\/40 {
+      --tw-gradient-to: rgb(25 28 59 / 0.78);
+    }
+
+    /* --- Teks Tema Gelap --- */
+    .dark .text-slate-900 {
+      color: #EEF3FA;
+    }
+    .dark .text-slate-800 {
+      color: #DCE5F2;
+    }
+    .dark .text-slate-700 {
+      color: #C4D0E4;
+    }
+    .dark .text-slate-600 {
+      color: #A9B8D0;
+    }
+    .dark .text-slate-500 {
+      color: #8FA1BE;
+    }
+    .dark .text-slate-400 {
+      color: #8698B6;
+    }
+    .dark .text-slate-300 {
+      color: #C4D0E4;
+    }
+    .dark .text-slate-200,
+    .dark .text-slate-200\/90 {
+      color: #DCE5F2;
+    }
+
+    /* Teks navy di atas badge/avatar emas pekat tetap navy gelap agar kontras. */
+    .dark .bg-\[\#C69214\].text-\[\#0B2453\],
+    .dark .bg-\[\#D49B16\].text-\[\#0B2453\],
+    .dark .bg-\[\#EDBA3A\].text-\[\#0B2453\],
+    .dark .bg-\[\#F3CA62\].text-\[\#0B2453\],
+    .dark .bg-\[\#F4CE6A\].text-\[\#0B2453\],
+    .dark .from-\[\#F3D16A\].text-\[\#0B2453\],
+    .dark .from-\[\#E5B83E\] .text-\[\#0B2453\],
+    .dark .from-\[\#D4A424\].text-\[\#0A1E46\] {
+      color: #0C2147;
+    }
+
+    .dark .text-\[\#9B710D\]\/80,
+    .dark .text-\[\#A67B10\]\/80 {
+      color: rgb(242 202 92 / 0.85);
+    }
+    .dark .text-\[\#6D28D9\] {
+      color: #C4B5FD;
+    }
+    .dark .text-\[\#2563EB\] {
+      color: #93C5FD;
+    }
+    .dark .text-\[\#0284C7\] {
+      color: #7DD3FC;
+    }
+
+    /* --- Garis & Pemisah Tema Gelap --- */
+    .dark .border-\[\#0B2453\],
+    .dark .border-\[\#0F2B5C\],
+    .dark .border-\[\#0B2453\]\/25,
+    .dark .border-\[\#0B2453\]\/30,
+    .dark .border-\[\#0B2453\]\/40,
+    .dark .border-\[\#0F2B5C\]\/25,
+    .dark .border-\[\#0F2B5C\]\/30,
+    .dark .border-\[\#0F2B5C\]\/40 {
+      border-color: #3D5278;
+    }
+    .dark .border-\[\#E2B33C\],
+    .dark .border-\[\#EDBA3A\],
+    .dark .border-\[\#B6810C\],
+    .dark .border-\[\#C69214\],
+    .dark .border-\[\#D49B16\] {
+      border-color: #8C6E22;
+    }
+    .dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+      border-color: var(--sbm-border-subtle);
+    }
+    .dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+      border-color: var(--sbm-border);
+    }
+
+    /* --- Kontrol Form Tema Gelap --- */
+    .dark input,
+    .dark select,
+    .dark textarea {
+      background-color: #0F1726;
+      border-color: #35486B;
+      color: #EEF3FA;
+    }
+    .dark input::placeholder,
+    .dark textarea::placeholder,
+    .dark .placeholder\:text-slate-400::placeholder {
+      color: #7C8EA8;
+    }
+    .dark select option {
+      background-color: #141E30;
+      color: #EEF3FA;
+    }
+    .dark .disabled\:bg-slate-100:disabled {
+      background-color: #1B273E;
+    }
+    .dark .disabled\:text-slate-400:disabled {
+      color: #7C8EA8;
+    }
+
+    /* --- Lencana & Status Berwarna Tema Gelap --- */
+    .dark .bg-emerald-50,
+    .dark .bg-emerald-50\/70,
+    .dark .bg-emerald-50\/20 {
+      background-color: #102B24;
+    }
+    .dark .bg-emerald-100 {
+      background-color: #14382E;
+    }
+    .dark .border-emerald-200,
+    .dark .border-emerald-200\/80,
+    .dark .border-emerald-300 {
+      border-color: #1F5E4B;
+    }
+    .dark .text-emerald-600 {
+      color: #34D399;
+    }
+    .dark .text-emerald-700 {
+      color: #4ADE9F;
+    }
+    .dark .text-emerald-800,
+    .dark .text-emerald-800\/80 {
+      color: #6EE7B7;
+    }
+    .dark .text-emerald-900,
+    .dark .text-emerald-950 {
+      color: #A7F3D0;
+    }
+
+    .dark .bg-amber-50,
+    .dark .bg-amber-50\/70,
+    .dark .bg-amber-50\/50,
+    .dark .bg-amber-50\/40,
+    .dark .bg-amber-50\/20 {
+      background-color: #292110;
+    }
+    .dark .bg-amber-100,
+    .dark .bg-amber-100\/80,
+    .dark .bg-amber-100\/90 {
+      background-color: #362B14;
+    }
+    .dark .border-amber-200,
+    .dark .border-amber-200\/80,
+    .dark .border-amber-300 {
+      border-color: #6B531B;
+    }
+    .dark .text-amber-600,
+    .dark .text-amber-700 {
+      color: #FCD34D;
+    }
+    .dark .text-amber-800,
+    .dark .text-amber-900 {
+      color: #FDE68A;
+    }
+    .dark .text-amber-950 {
+      color: #FEF3C7;
+    }
+
+    .dark .bg-rose-50,
+    .dark .bg-rose-50\/20 {
+      background-color: #2D1620;
+    }
+    .dark .bg-rose-100 {
+      background-color: #3B1C28;
+    }
+    .dark .border-rose-200,
+    .dark .border-rose-300 {
+      border-color: #6E3145;
+    }
+    .dark .text-rose-500 {
+      color: #FB7185;
+    }
+    .dark .text-rose-600,
+    .dark .text-rose-700 {
+      color: #FDA4AF;
+    }
+    .dark .text-rose-800 {
+      color: #FECDD3;
+    }
+
+    .dark .bg-red-50 {
+      background-color: #2D1619;
+    }
+    .dark .border-red-200 {
+      border-color: #6D2D2D;
+    }
+    .dark .text-red-700 {
+      color: #FCA5A5;
+    }
+
+    .dark .bg-blue-50,
+    .dark .bg-blue-50\/70,
+    .dark .bg-blue-50\/60,
+    .dark .bg-blue-50\/50,
+    .dark .bg-blue-50\/30,
+    .dark .bg-blue-50\/20 {
+      background-color: #13233D;
+    }
+    .dark .bg-blue-100,
+    .dark .bg-blue-100\/70 {
+      background-color: #193052;
+    }
+    .dark .border-blue-100,
+    .dark .border-blue-200,
+    .dark .border-blue-200\/60,
+    .dark .border-blue-200\/80,
+    .dark .border-blue-300 {
+      border-color: #2D4E7A;
+    }
+    .dark .text-blue-600,
+    .dark .text-blue-800,
+    .dark .text-blue-900 {
+      color: #93C5FD;
+    }
+
+    .dark .bg-indigo-50,
+    .dark .bg-indigo-50\/70,
+    .dark .bg-indigo-50\/50,
+    .dark .bg-indigo-50\/40 {
+      background-color: #191C3B;
+    }
+    .dark .bg-indigo-100,
+    .dark .bg-indigo-100\/90 {
+      background-color: #232652;
+    }
+    .dark .border-indigo-200,
+    .dark .border-indigo-200\/80 {
+      border-color: #3C3F7D;
+    }
+    .dark .text-indigo-500,
+    .dark .text-indigo-600,
+    .dark .text-indigo-700,
+    .dark .text-indigo-800 {
+      color: #A5B4FC;
+    }
+
+    .dark .bg-sky-50,
+    .dark .bg-sky-50\/70 {
+      background-color: #11263B;
+    }
+    .dark .border-sky-200\/80 {
+      border-color: #2D5E7E;
+    }
+    .dark .text-sky-700 {
+      color: #7DD3FC;
+    }
+
+    /* Tint navy tipis → tint terang tipis di latar gelap */
+    .dark .bg-\[\#0B2453\]\/10,
+    .dark .bg-\[\#0F2B5C\]\/10 {
+      background-color: rgb(255 255 255 / 0.08);
+    }
+    .dark .bg-\[\#0B2453\]\/5,
+    .dark .bg-\[\#0F2B5C\]\/5 {
+      background-color: rgb(255 255 255 / 0.04);
+    }
+
+    /* --- Ring & Focus Tema Gelap --- */
+    .dark .ring-\[\#0B2453\],
+    .dark .ring-\[\#0F2B5C\],
+    .dark .ring-\[\#0B2453\]\/20,
+    .dark .ring-\[\#0F2B5C\]\/20,
+    .dark .ring-slate-200,
+    .dark .ring-slate-300 {
+      --tw-ring-color: #6B80A3;
+    }
+    .dark .focus\:ring-\[\#0B2453\]:focus,
+    .dark .focus\:ring-\[\#0F2B5C\]:focus {
+      --tw-ring-color: #6B80A3;
+    }
+    .dark .focus\:ring-\[\#0B2453\]\/10:focus,
+    .dark .focus\:ring-\[\#0F2B5C\]\/10:focus {
+      --tw-ring-color: rgb(107 128 163 / 0.32);
+    }
+    .dark .focus\:border-\[\#0B2453\]:focus,
+    .dark .focus\:border-\[\#0F2B5C\]:focus {
+      border-color: #6B85B0;
+    }
+    .dark .focus\:border-amber-500:focus {
+      border-color: #F59E0B;
+    }
+    .dark .focus\:border-emerald-600:focus {
+      border-color: #34D399;
+    }
+    .dark .focus\:ring-emerald-600:focus {
+      --tw-ring-color: #34D399;
+    }
+
+    /* --- Hover States Tema Gelap (spesifisitas 0,3,0 mengalahkan 0,2,0) --- */
+    .dark .hover\:bg-white:hover,
+    .dark .hover\:bg-slate-50:hover,
+    .dark .hover\:bg-slate-50\/70:hover,
+    .dark .hover\:bg-\[\#EEF4FC\]:hover {
+      background-color: var(--sbm-hover-subtle);
+    }
+    .dark .hover\:bg-slate-100:hover,
+    .dark .hover\:bg-\[\#DDE7F6\]:hover {
+      background-color: var(--sbm-hover-tint);
+    }
+    .dark .hover\:bg-\[\#0B2453\]:hover,
+    .dark .hover\:bg-\[\#0F2B5C\]:hover,
+    .dark .hover\:bg-\[\#143470\]:hover,
+    .dark .hover\:bg-\[\#132f63\]:hover,
+    .dark .hover\:bg-\[\#14397B\]:hover,
+    .dark .hover\:bg-\[\#143B7F\]:hover,
+    .dark .hover\:bg-\[\#163A7A\]:hover,
+    .dark .hover\:bg-\[\#1A3F7F\]:hover {
+      background-color: var(--sbm-navy-btn-hover);
+    }
+    .dark .hover\:bg-\[\#a87a0c\]:hover {
+      background-color: #C99212;
+    }
+    .dark .hover\:bg-\[\#FFFBEB\]:hover,
+    .dark .hover\:bg-\[\#FAEBC0\]:hover,
+    .dark .hover\:bg-\[\#FCEEC5\]:hover,
+    .dark .hover\:bg-amber-50:hover {
+      background-color: var(--sbm-gold-soft-hover);
+    }
+    .dark .hover\:bg-amber-100:hover {
+      background-color: #46371A;
+    }
+    .dark .hover\:bg-rose-50:hover,
+    .dark .hover\:bg-rose-100:hover {
+      background-color: #47202D;
+    }
+    .dark .hover\:bg-emerald-100:hover {
+      background-color: #1A4537;
+    }
+    .dark .hover\:bg-indigo-50\/40:hover {
+      background-color: #262A59;
+    }
+
+    .dark .hover\:border-\[\#0B2453\]:hover {
+      border-color: #5D78A8;
+    }
+    .dark .hover\:border-\[\#B6810C\]:hover,
+    .dark .hover\:border-\[\#C69214\]:hover,
+    .dark .hover\:border-amber-400:hover {
+      border-color: #C99212;
+    }
+    .dark .hover\:border-slate-300:hover {
+      border-color: #4C628A;
+    }
+    .dark .hover\:border-rose-300:hover {
+      border-color: #9D4461;
+    }
+
+    .dark .hover\:text-\[\#0B2453\]:hover,
+    .dark .hover\:text-\[\#0F2B5C\]:hover,
+    .dark .hover\:text-\[\#163A7A\]:hover,
+    .dark .hover\:text-slate-900:hover,
+    .dark .hover\:text-white:hover {
+      color: #FFFFFF;
+    }
+    .dark .hover\:text-slate-600:hover {
+      color: #CBD5E1;
+    }
+    .dark .hover\:text-\[\#C69214\]:hover,
+    .dark .hover\:text-\[\#F3CA62\]:hover {
+      color: #F2CA5C;
+    }
+    .dark .hover\:text-rose-600:hover {
+      color: #FDA4AF;
+    }
+    .dark .hover\:text-emerald-950:hover {
+      color: #A7F3D0;
+    }
+    .dark .group:hover .group-hover\:bg-\[\#0B2453\] {
+      background-color: var(--sbm-navy-btn);
+    }
+    .dark .group:hover .group-hover\:text-white {
+      color: #FFFFFF;
+    }
   }
 }
 

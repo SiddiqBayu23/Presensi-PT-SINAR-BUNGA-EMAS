@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import {
   CalendarClock,
+  CalendarDays,
   CheckCircle2,
   Clock3,
   DoorOpen,
@@ -12,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useHris } from '../../context/HrisContext';
 import { ApprovalCard } from '../../shared/ApprovalCard';
+import { ScheduleCalendarView } from '../../shared/ScheduleCalendarView';
 import type { ApprovalStatus } from '../../types/hris';
 import { formatRupiah, isIsoDateWithinRange } from '../../utils/hrisLogic';
 
@@ -23,6 +25,7 @@ interface SupervisorPanelViewProps {
    * memantau/memutuskan antrean tiap supervisor). Default: pengguna yang login.
    */
   supervisorUid?: string;
+  defaultSubTab?: 'persetujuan' | 'jadwal';
 }
 
 interface SupervisedItem {
@@ -74,7 +77,11 @@ function SectionHeader({
  * (data sudah dibatasi Firestore rules: sendiri + bawahan se-divisi). Tanpa akses
  * data penggajian/PII seluruh perusahaan seperti panel HRD.
  */
-export function SupervisorPanelView({ onShowToast, supervisorUid }: SupervisorPanelViewProps) {
+export function SupervisorPanelView({
+  onShowToast,
+  supervisorUid,
+  defaultSubTab = 'persetujuan',
+}: SupervisorPanelViewProps) {
   const {
     currentUser,
     employees,
@@ -96,6 +103,7 @@ export function SupervisorPanelView({ onShowToast, supervisorUid }: SupervisorPa
   const isOwnPanel = Boolean(currentUser) && meUid === currentUser?.uid;
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [subTab, setSubTab] = useState<'persetujuan' | 'jadwal'>(defaultSubTab);
 
   const queue = useMemo(() => {
     const countOwnPending = (items: SupervisedItem[]) =>
@@ -248,7 +256,47 @@ export function SupervisorPanelView({ onShowToast, supervisorUid }: SupervisorPa
         </div>
       </section>
 
-      {/* Tim izin/cuti hari ini — tidak bisa absen */}
+      {/* Sub-tab Switcher: Persetujuan Tim vs Jadwal & Shift Divisi */}
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          type="button"
+          onClick={() => setSubTab('persetujuan')}
+          className={`h-10 px-4 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 cursor-pointer transition-colors ${
+            subTab === 'persetujuan'
+              ? 'bg-[#0B2453] text-white shadow-xs'
+              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <ShieldCheck className="w-4 h-4" />
+          <span>Persetujuan Tim</span>
+          {pendingTotal > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-rose-500 text-white font-mono">
+              {pendingTotal}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubTab('jadwal')}
+          className={`h-10 px-4 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 cursor-pointer transition-colors ${
+            subTab === 'jadwal'
+              ? 'bg-[#0B2453] text-white shadow-xs'
+              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+          }`}
+        >
+          <CalendarDays className="w-4 h-4" />
+          <span>Jadwal &amp; Shift Divisi</span>
+        </button>
+      </div>
+
+      {subTab === 'jadwal' && (
+        <ScheduleCalendarView forcedDivision={panelOwner.division} onShowToast={notify} />
+      )}
+
+      {subTab === 'persetujuan' && (
+        <>
+          {/* Tim izin/cuti hari ini — tidak bisa absen */}
       <section className="rounded-3xl bg-white p-5 shadow-sm border border-slate-200/80 space-y-3">
         <SectionHeader
           icon={<CalendarClock className="w-4 h-4" />}
@@ -371,27 +419,74 @@ export function SupervisorPanelView({ onShowToast, supervisorUid }: SupervisorPa
         {queue.shift.pending.length === 0 ? (
           <p className="text-xs text-slate-500">{emptyHint}</p>
         ) : (
-          <div className="space-y-2.5">
-            {queue.shift.pending.map((item) => (
-              <ApprovalCard
-                key={item.id}
-                title={`${item.employeeName} (${item.nik})`}
-                meta={`${item.date} • ${item.fromShift} → ${item.toShift}`}
-                status={item.status}
-                reason={item.reason}
-                approveLabel={busyKey === `${item.id}:Disetujui` ? 'Menyimpan...' : 'Setujui'}
-                onApprove={
-                  busyKey
-                    ? undefined
-                    : () => void runReview(item.id, `Tukar shift ${item.employeeName}`, reviewShiftSwap, item.id, 'Disetujui')
-                }
-                onReject={
-                  busyKey
-                    ? undefined
-                    : () => void runReview(item.id, `Tukar shift ${item.employeeName}`, reviewShiftSwap, item.id, 'Ditolak')
-                }
-              />
-            ))}
+          <div className="space-y-3">
+            {queue.shift.pending.map((item) => {
+              const peerNeedsApproval = Boolean(item.targetUid && item.peerStatus === 'Menunggu');
+              const peerApproved = item.targetUid && item.peerStatus === 'Disetujui';
+
+              return (
+                <div key={item.id} className="space-y-1.5">
+                  {peerNeedsApproval && (
+                    <div className="text-[11px] font-bold text-amber-900 bg-amber-50 border border-amber-300 px-3.5 py-2 rounded-xl flex items-center gap-2">
+                      <Clock3 className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>
+                        Tahap 1: Menunggu persetujuan dari rekan (
+                        <strong>{item.targetEmployeeName ?? 'rekan kerja'}</strong>) terlebih dahulu
+                        sebelum dapat disetujui atasan.
+                      </span>
+                    </div>
+                  )}
+                  {peerApproved && (
+                    <div className="text-[11px] font-bold text-emerald-900 bg-emerald-50 border border-emerald-300 px-3.5 py-2 rounded-xl flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Tahap 1 Selesai: Rekan (<strong>{item.targetEmployeeName}</strong>) telah
+                        menyetujui pertukaran ini. Siap disetujui atasan.
+                      </span>
+                    </div>
+                  )}
+                  <ApprovalCard
+                    title={`${item.employeeName} (${item.nik}) ${
+                      item.targetEmployeeName ? `↔ ${item.targetEmployeeName}` : ''
+                    }`}
+                    meta={`${item.date} • ${item.fromShift} → ${item.toShift}`}
+                    status={item.status}
+                    reason={item.reason}
+                    approveLabel={
+                      busyKey === `${item.id}:Disetujui`
+                        ? 'Menyimpan...'
+                        : peerNeedsApproval
+                          ? 'Menunggu Rekan'
+                          : 'Setujui'
+                    }
+                    onApprove={
+                      busyKey || peerNeedsApproval
+                        ? undefined
+                        : () =>
+                            void runReview(
+                              item.id,
+                              `Tukar shift ${item.employeeName}`,
+                              reviewShiftSwap,
+                              item.id,
+                              'Disetujui'
+                            )
+                    }
+                    onReject={
+                      busyKey
+                        ? undefined
+                        : () =>
+                            void runReview(
+                              item.id,
+                              `Tukar shift ${item.employeeName}`,
+                              reviewShiftSwap,
+                              item.id,
+                              'Ditolak'
+                            )
+                    }
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -511,6 +606,8 @@ export function SupervisorPanelView({ onShowToast, supervisorUid }: SupervisorPa
           </div>
         )}
       </section>
+        </>
+      )}
     </div>
   );
 }

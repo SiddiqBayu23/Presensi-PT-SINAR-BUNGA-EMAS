@@ -13,6 +13,7 @@ import {
   Paperclip,
   Plus,
   Send,
+  Trash2,
   User,
   Users,
   X,
@@ -27,8 +28,16 @@ interface TodoListWidgetProps {
 }
 
 export function TodoListWidget({ role, onShowToast }: TodoListWidgetProps) {
-  const { currentUser, employees, todos, addTodoTask, submitTodoReport, reviewTodoTask, wibNow } =
-    useHris();
+  const {
+    currentUser,
+    employees,
+    todos,
+    addTodoTask,
+    submitTodoReport,
+    reviewTodoTask,
+    deleteTodoTasks,
+    wibNow,
+  } = useHris();
 
   const [activeFilter, setActiveFilter] = useState<'all' | 'pending' | 'review' | 'done'>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -240,6 +249,42 @@ export function TodoListWidget({ role, onShowToast }: TodoListWidgetProps) {
     }
   };
 
+  const handleDeleteTask = async (task: TodoTask) => {
+    if (!canCreateTask) return;
+    if (!window.confirm(`Hapus tugas "${task.title}"?`)) return;
+    const res = await deleteTodoTasks([task.id]);
+    if (!res.ok) {
+      onShowToast?.(res.error ?? 'Gagal menghapus tugas.');
+      return;
+    }
+    if (selectedTaskForReport?.id === task.id) setSelectedTaskForReport(null);
+    if (selectedTaskForReview?.id === task.id) setSelectedTaskForReview(null);
+    onShowToast?.(`Tugas "${task.title}" dihapus.`);
+  };
+
+  const handleDeleteAllVisible = async () => {
+    if (!canCreateTask || filteredTasks.length === 0) return;
+    if (
+      !window.confirm(
+        `Hapus ${filteredTasks.length} tugas yang sedang ditampilkan? Tindakan ini tidak dapat dibatalkan.`
+      )
+    ) {
+      return;
+    }
+    const ids = filteredTasks.map((t) => t.id);
+    const res = await deleteTodoTasks(ids);
+    if (!res.ok) {
+      onShowToast?.(res.error ?? 'Gagal menghapus daftar tugas.');
+      return;
+    }
+    if (selectedTaskForReport && ids.includes(selectedTaskForReport.id)) {
+      setSelectedTaskForReport(null);
+    }
+    if (selectedTaskForReview && ids.includes(selectedTaskForReview.id)) {
+      setSelectedTaskForReview(null);
+    }
+    onShowToast?.(`${res.deleted} tugas berhasil dihapus.`);
+  };
   return (
     <section className="rounded-3xl bg-white border border-slate-200/80 shadow-[0_6px_24px_rgba(11,36,83,0.06)] p-5 sm:p-6 space-y-5">
       {/* Header bar */}
@@ -262,14 +307,26 @@ export function TodoListWidget({ role, onShowToast }: TodoListWidgetProps) {
         </div>
 
         {canCreateTask && (
-          <button
-            type="button"
-            onClick={() => setShowCreateModal(true)}
-            className="h-10 px-4 rounded-xl bg-gradient-to-r from-[#0B2453] to-[#153B7F] hover:brightness-110 text-white text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
-          >
-            <Plus className="w-4 h-4 text-[#F4CE6A]" />
-            <span>Tambah Tugas Baru</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {filteredTasks.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void handleDeleteAllVisible()}
+                className="h-10 px-3.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Hapus Semua ({filteredTasks.length})</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(true)}
+              className="h-10 px-4 rounded-xl bg-gradient-to-r from-[#0B2453] to-[#153B7F] hover:brightness-110 text-white text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-2 shadow-sm transition-all cursor-pointer"
+            >
+              <Plus className="w-4 h-4 text-[#F4CE6A]" />
+              <span>Tambah Tugas Baru</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -356,21 +413,33 @@ export function TodoListWidget({ role, onShowToast }: TodoListWidgetProps) {
                     </h3>
                     <p className="text-xs text-slate-600 line-clamp-2">{task.description}</p>
                   </div>
-                  <span
-                    className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full whitespace-nowrap ${
-                      task.status === 'Selesai'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : task.status === 'Menunggu Review'
-                          ? 'bg-blue-100 text-blue-800'
-                          : task.status === 'Ditolak'
-                            ? 'bg-rose-100 text-rose-800'
-                            : 'bg-amber-100 text-amber-800'
-                    }`}
-                  >
-                    {task.status}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span
+                      className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full whitespace-nowrap ${
+                        task.status === 'Selesai'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : task.status === 'Menunggu Review'
+                            ? 'bg-blue-100 text-blue-800'
+                            : task.status === 'Ditolak'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-amber-100 text-amber-800'
+                      }`}
+                    >
+                      {task.status}
+                    </span>
+                    {canCreateTask && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteTask(task)}
+                        aria-label={`Hapus tugas ${task.title}`}
+                        title="Hapus tugas"
+                        className="inline-flex items-center justify-center h-7 w-7 rounded-lg border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
-
                 {/* Details row: Assignee, Due Date, Required Report */}
                 <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-100">
                   <div className="flex items-center gap-1.5 text-slate-600">
